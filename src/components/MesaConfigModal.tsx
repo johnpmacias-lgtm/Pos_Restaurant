@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Mesa } from '../types';
 import * as db from '../db/database';
 import { X, Save, MapPin, Users, FileText } from 'lucide-react';
