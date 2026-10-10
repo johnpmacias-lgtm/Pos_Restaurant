@@ -7,6 +7,7 @@ import PaymentModal from '../components/PaymentModal';
 import OrderSummaryModal from '../components/OrderSummaryModal';
 import CashRegisterOpenModal from '../components/CashRegisterOpenModal';
 import MesaConfigModal from '../components/MesaConfigModal';
+import InventarioEditModal from '../components/InventarioEditModal';
 import {
   LogOut, LayoutDashboard, Grid3X3, UtensilsCrossed, Package,
   CalendarDays, Wallet, Users, Plus, Edit2, Trash2, Unlock,
@@ -32,6 +33,7 @@ export default function AdminView() {
   const [paymentPedido, setPaymentPedido] = useState<Pedido | null>(null);
   const [summaryPedido, setSummaryPedido] = useState<Pedido | null>(null);
   const [configMesa, setConfigMesa] = useState<Mesa | null>(null);
+  const [editInsumo, setEditInsumo] = useState<Inventario | null>(null);
 
   // Form states
   const [newProd, setNewProd] = useState({ nombre: '', precio_base: 0, categoria: 'Platos', es_desechable: false });
@@ -117,6 +119,48 @@ export default function AdminView() {
     db.emitEvent('estado_cocina_actualizado', { pedidoId, estado: 'entregado' });
     refreshData();
     setSummaryPedido(null);
+  };
+
+  // Eliminar insumo del inventario
+  const eliminarInsumo = (insumoId: string) => {
+    if (!confirm('¿Está seguro de eliminar este insumo? Esta acción no se puede deshacer.')) return;
+    
+    const inventario = db.getInventario();
+    const insumo = inventario.find(i => i.id === insumoId);
+    
+    if (insumo) {
+      // También eliminar el producto asociado
+      const productos = db.getProductos();
+      const productosFiltrados = productos.filter(p => p.id !== insumo.producto_id);
+      localStorage.setItem('pos_productos', JSON.stringify(productosFiltrados));
+    }
+    
+    // Eliminar del inventario
+    const inventarioFiltrado = inventario.filter(i => i.id !== insumoId);
+    localStorage.setItem('pos_inventario', JSON.stringify(inventarioFiltrado));
+    
+    refreshData();
+  };
+
+  // Eliminar producto del menú
+  const eliminarProducto = (productoId: string) => {
+    if (!confirm('¿Está seguro de eliminar este producto del menú? Esta acción no se puede deshacer.')) return;
+    
+    const productos = db.getProductos();
+    const producto = productos.find(p => p.id === productoId);
+    
+    if (producto) {
+      // También eliminar del inventario
+      const inventario = db.getInventario();
+      const inventarioFiltrado = inventario.filter(i => i.producto_id !== productoId);
+      localStorage.setItem('pos_inventario', JSON.stringify(inventarioFiltrado));
+    }
+    
+    // Eliminar del menú
+    const productosFiltrados = productos.filter(p => p.id !== productoId);
+    localStorage.setItem('pos_productos', JSON.stringify(productosFiltrados));
+    
+    refreshData();
   };
 
   // ============ DASHBOARD ============
@@ -568,10 +612,18 @@ export default function AdminView() {
                       </button>
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <button onClick={() => {
-                        const newPrecio = prompt('Nuevo precio:', prod.precio_base.toString());
-                        if (newPrecio) { db.updateProducto({ ...prod, precio_base: Number(newPrecio) }); refreshData(); }
-                      }} className="text-blue-400 hover:text-blue-300 p-1"><Edit2 className="w-4 h-4" /></button>
+                      <div className="flex items-center justify-center gap-2">
+                        <button onClick={() => {
+                          const newPrecio = prompt('Nuevo precio:', prod.precio_base.toString());
+                          if (newPrecio) { db.updateProducto({ ...prod, precio_base: Number(newPrecio) }); refreshData(); }
+                        }} className="text-blue-400 hover:text-blue-300 p-1" title="Editar precio">
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => eliminarProducto(prod.id)}
+                          className="text-red-400 hover:text-red-300 p-1" title="Eliminar producto">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -721,7 +773,7 @@ export default function AdminView() {
                 <th className="text-right text-slate-300 text-sm font-medium px-4 py-3">Stock</th>
                 <th className="text-right text-slate-300 text-sm font-medium px-4 py-3">Mínimo</th>
                 <th className="text-center text-slate-300 text-sm font-medium px-4 py-3">Estado</th>
-                <th className="text-center text-slate-300 text-sm font-medium px-4 py-3">Ajustar</th>
+                <th className="text-center text-slate-300 text-sm font-medium px-4 py-3">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700">
@@ -754,14 +806,36 @@ export default function AdminView() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <button onClick={() => {
-                          const cantidad = prompt(`Cantidad a agregar (${inv.unidad_medida}):`, '10');
-                          if (cantidad) {
-                            db.updateInventario({ ...inv, stock_actual: inv.stock_actual + Number(cantidad) });
-                            db.emitEvent('inventario_actualizado', {});
-                            refreshData();
-                          }
-                        }} className="text-green-400 hover:text-green-300 text-sm font-medium">+ Agregar</button>
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => setEditInsumo(inv)}
+                            className="text-blue-400 hover:text-blue-300 p-1"
+                            title="Editar insumo"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const cantidad = prompt(`Cantidad a agregar (${inv.unidad_medida}):`, '10');
+                              if (cantidad) {
+                                db.updateInventario({ ...inv, stock_actual: inv.stock_actual + Number(cantidad) });
+                                db.emitEvent('inventario_actualizado', {});
+                                refreshData();
+                              }
+                            }}
+                            className="text-green-400 hover:text-green-300 p-1"
+                            title="Ajustar stock"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => eliminarInsumo(inv.id)}
+                            className="text-red-400 hover:text-red-300 p-1"
+                            title="Eliminar insumo"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1112,6 +1186,18 @@ export default function AdminView() {
           onClose={() => setConfigMesa(null)}
           onSave={() => {
             setConfigMesa(null);
+            refreshData();
+          }}
+        />
+      )}
+
+      {/* Modal de edición de inventario */}
+      {editInsumo && (
+        <InventarioEditModal
+          insumo={editInsumo}
+          onClose={() => setEditInsumo(null)}
+          onSave={() => {
+            setEditInsumo(null);
             refreshData();
           }}
         />
