@@ -6,11 +6,12 @@ import { v4 as uuidv4 } from 'uuid';
 import PaymentModal from '../components/PaymentModal';
 import OrderSummaryModal from '../components/OrderSummaryModal';
 import CashRegisterOpenModal from '../components/CashRegisterOpenModal';
+import MesaConfigModal from '../components/MesaConfigModal';
 import {
   LogOut, LayoutDashboard, Grid3X3, UtensilsCrossed, Package,
   CalendarDays, Wallet, Users, Plus, Edit2, Trash2, Unlock,
   TrendingUp, AlertTriangle, DollarSign, ShoppingBag,
-  ClipboardList, CreditCard, Eye, Filter, X, Search, ChefHat
+  ClipboardList, CreditCard, Eye, Filter, X, Search, ChefHat, Settings
 } from 'lucide-react';
 
 type AdminTab = 'dashboard' | 'mesas' | 'ordenes' | 'menu' | 'inventario' | 'reservas' | 'caja' | 'usuarios' | 'cocina';
@@ -30,6 +31,7 @@ export default function AdminView() {
   // Modals
   const [paymentPedido, setPaymentPedido] = useState<Pedido | null>(null);
   const [summaryPedido, setSummaryPedido] = useState<Pedido | null>(null);
+  const [configMesa, setConfigMesa] = useState<Mesa | null>(null);
 
   // Form states
   const [newProd, setNewProd] = useState({ nombre: '', precio_base: 0, categoria: 'Platos', es_desechable: false });
@@ -216,39 +218,52 @@ export default function AdminView() {
         {mesas.map(mesa => {
           const pedidoMesa = pedidos.find(p => p.mesa_id === mesa.id && p.estado_pago !== 'pagado' && p.tipo === 'mesa');
           return (
-            <button key={mesa.id} onClick={() => handleMesaClick(mesa)}
-              className={`rounded-xl p-4 border-2 transition-all hover:scale-105 active:scale-95 text-left ${
-                mesa.estado === 'libre' ? 'bg-green-900/20 border-green-700 hover:border-green-400' :
-                mesa.estado === 'ocupada' ? 'bg-orange-900/20 border-orange-700 hover:border-orange-400' :
-                'bg-purple-900/20 border-purple-700 hover:border-purple-400'
-              }`}>
-              <div className="text-center">
-                <p className="text-3xl font-bold text-white">{mesa.numero_mesa}</p>
-                <p className="text-slate-400 text-sm">{mesa.puestos} pax • {mesa.zona}</p>
-                <div className={`mt-2 text-xs font-bold px-3 py-1 rounded-full inline-block ${
-                  mesa.estado === 'libre' ? 'bg-green-500/20 text-green-300' :
-                  mesa.estado === 'ocupada' ? 'bg-orange-500/20 text-orange-300' :
-                  'bg-purple-500/20 text-purple-300'
+            <div key={mesa.id} className="relative">
+              <button onClick={() => handleMesaClick(mesa)}
+                className={`w-full rounded-xl p-4 border-2 transition-all hover:scale-105 active:scale-95 text-left ${
+                  mesa.estado === 'libre' ? 'bg-green-900/20 border-green-700 hover:border-green-400' :
+                  mesa.estado === 'ocupada' ? 'bg-orange-900/20 border-orange-700 hover:border-orange-400' :
+                  'bg-purple-900/20 border-purple-700 hover:border-purple-400'
                 }`}>
-                  {mesa.estado === 'libre' ? '🟢 LIBRE' : mesa.estado === 'ocupada' ? '🟠 OCUPADA' : '🟣 RESERVADA'}
-                </div>
-              </div>
-              {pedidoMesa && (
-                <div className="mt-3 pt-3 border-t border-slate-700/50">
-                  <div className="flex items-center justify-between">
-                    <span className="text-white font-bold">${pedidoMesa.total.toFixed(0)}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full ${
-                      pedidoMesa.estado_pago === 'pagado' ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
-                    }`}>
-                      {pedidoMesa.estado_pago === 'pagado' ? '✓ Pagado' : '⏳ Por cobrar'}
-                    </span>
+                <div className="text-center">
+                  <p className="text-3xl font-bold text-white">{mesa.numero_mesa}</p>
+                  <p className="text-slate-400 text-sm">{mesa.puestos} pax • {mesa.zona}</p>
+                  <div className={`mt-2 text-xs font-bold px-3 py-1 rounded-full inline-block ${
+                    mesa.estado === 'libre' ? 'bg-green-500/20 text-green-300' :
+                    mesa.estado === 'ocupada' ? 'bg-orange-500/20 text-orange-300' :
+                    'bg-purple-500/20 text-purple-300'
+                  }`}>
+                    {mesa.estado === 'libre' ? '🟢 LIBRE' : mesa.estado === 'ocupada' ? '🟠 OCUPADA' : '🟣 RESERVADA'}
                   </div>
-                  {mesa.estado === 'ocupada' && pedidoMesa.estado_pago !== 'pagado' && (
-                    <p className="text-orange-300 text-xs mt-1 text-center">👆 Click para cobrar</p>
-                  )}
                 </div>
-              )}
-            </button>
+                {pedidoMesa && (
+                  <div className="mt-3 pt-3 border-t border-slate-700/50">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white font-bold">${pedidoMesa.total.toFixed(0)}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        pedidoMesa.estado_pago === 'pagado' ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                      }`}>
+                        {pedidoMesa.estado_pago === 'pagado' ? '✓ Pagado' : '⏳ Por cobrar'}
+                      </span>
+                    </div>
+                    {mesa.estado === 'ocupada' && pedidoMesa.estado_pago !== 'pagado' && (
+                      <p className="text-orange-300 text-xs mt-1 text-center">👆 Click para cobrar</p>
+                    )}
+                  </div>
+                )}
+              </button>
+              {/* Ícono de configuración */}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfigMesa(mesa);
+                }}
+                className="absolute top-2 right-2 p-1.5 bg-slate-700/80 hover:bg-slate-600 rounded-lg transition-colors"
+                title="Configurar mesa"
+              >
+                <Settings className="w-4 h-4 text-slate-300" />
+              </button>
+            </div>
           );
         })}
       </div>
@@ -621,11 +636,15 @@ export default function AdminView() {
               <label className="text-slate-400 text-xs block mb-1">Categoría *</label>
               <select value={newInsumo.categoria} onChange={e => setNewInsumo({ ...newInsumo, categoria: e.target.value })}
                 className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white">
-                <option value="Platos">Platos</option>
-                <option value="Bebidas">Bebidas</option>
-                <option value="Postres">Postres</option>
-                <option value="Desechables">Desechables</option>
-                <option value="Insumos">Insumos</option>
+                <option value="Carnes y aves">Carnes y aves</option>
+                <option value="Pescados y mariscos">Pescados y mariscos</option>
+                <option value="Frutas y verduras">Frutas y verduras</option>
+                <option value="Lácteos y huevos">Lácteos y huevos</option>
+                <option value="Abarrotes y secos">Abarrotes y secos</option>
+                <option value="Aceites, salsas y condimentos">Aceites, salsas y condimentos</option>
+                <option value="Bebidas e insumos líquidos">Bebidas e insumos líquidos</option>
+                <option value="Congelados">Congelados</option>
+                <option value="Descartables y suministros">Descartables y suministros</option>
               </select>
             </div>
             <div>
@@ -1084,6 +1103,18 @@ export default function AdminView() {
       {/* Modal de pago */}
       {paymentPedido && (
         <PaymentModal pedido={paymentPedido} onClose={() => setPaymentPedido(null)} onSuccess={() => { setPaymentPedido(null); refreshData(); }} />
+      )}
+
+      {/* Modal de configuración de mesa */}
+      {configMesa && (
+        <MesaConfigModal
+          mesa={configMesa}
+          onClose={() => setConfigMesa(null)}
+          onSave={() => {
+            setConfigMesa(null);
+            refreshData();
+          }}
+        />
       )}
     </div>
   );

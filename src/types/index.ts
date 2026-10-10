@@ -20,6 +20,7 @@ export interface Mesa {
   puestos: number;
   zona: string;
   estado: EstadoMesa;
+  notas?: string;
 }
 
 export interface Reserva {

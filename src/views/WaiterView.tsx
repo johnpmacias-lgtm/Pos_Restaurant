@@ -302,9 +302,9 @@ export default function WaiterView() {
           </div>
           <div className="flex gap-2 p-3 overflow-x-auto bg-slate-800/30 border-b border-slate-700">
             {categorias.map(cat => (
-              <button key={cat} onClick={() => setCategoria(cat)}
+              <button key={cat} onClick={() => { setCategoria(cat); setShowDesechables(false); }}
                 className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-                  categoria === cat ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  categoria === cat && !showDesechables ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}>{cat}</button>
             ))}
           </div>

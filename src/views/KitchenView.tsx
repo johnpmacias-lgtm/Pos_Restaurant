@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Pedido, EstadoCocina } from '../types';
 import * as db from '../db/database';
-import { ChefHat, Clock, Flame, CheckCircle, LogOut, AlertTriangle } from 'lucide-react';
+import KitchenHistoryModal from '../components/KitchenHistoryModal';
+import { ChefHat, Clock, Flame, CheckCircle, LogOut, AlertTriangle, History } from 'lucide-react';
 
 export default function KitchenView() {
   const { user, pedidos, refreshPedidos, logout } = useApp();
   const [selectedPedido, setSelectedPedido] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(refreshPedidos, 2000);
@@ -141,6 +143,13 @@ export default function KitchenView() {
             <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
             <span className="text-green-400 text-sm">En línea</span>
           </div>
+          <button
+            onClick={() => setShowHistory(true)}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+          >
+            <History className="w-4 h-4" />
+            Ver Historial
+          </button>
           <span className="text-slate-400 text-sm">{user?.nombre}</span>
           <button onClick={logout} className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-slate-700">
             <LogOut className="w-5 h-5" />
@@ -224,6 +233,11 @@ export default function KitchenView() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Modal de Historial */}
+      {showHistory && (
+        <KitchenHistoryModal onClose={() => setShowHistory(false)} />
       )}
     </div>
   );
