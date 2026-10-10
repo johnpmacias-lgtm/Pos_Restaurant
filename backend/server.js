@@ -17,10 +17,14 @@ const cors = require('cors');
 const path = require('path');
 
 // Importar controladores
+const authController = require('./controllers/authController');
 const cobroController = require('./controllers/cobroController');
 const cajaController = require('./controllers/cajaController');
 const configuracionController = require('./controllers/configuracionController');
 const reportesController = require('./controllers/reportesController');
+
+// Importar middleware de autenticación
+const { verificarToken } = require('./middleware/authMiddleware');
 
 // ============================================
 // CONFIGURACIÓN INICIAL
@@ -28,10 +32,15 @@ const reportesController = require('./controllers/reportesController');
 
 const app = express();
 const server = http.createServer(app);
+
+// Configuración de CORS segura (solo frontend local)
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
 const io = new Server(server, {
   cors: {
-    origin: '*', // En producción, restringir a dominios específicos
-    methods: ['GET', 'POST']
+    origin: FRONTEND_URL,
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
@@ -41,8 +50,13 @@ const PORT = process.env.PORT || 3001;
 // MIDDLEWARE
 // ============================================
 
-// CORS para permitir peticiones desde el frontend
-app.use(cors());
+// CORS seguro - solo permite el frontend local
+app.use(cors({
+  origin: FRONTEND_URL,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 // Parsear JSON
 app.use(express.json());
@@ -63,14 +77,49 @@ app.set('io', io);
 // RUTAS DE LA API
 // ============================================
 
-// Health check
+// Health check (público)
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     service: 'POS/KDS Backend',
-    version: '1.0.0'
+    version: '2.0.0'
   });
+});
+
+// --------------------------------------------
+// RUTAS DE AUTENTICACIÓN (públicas)
+// --------------------------------------------
+
+/**
+ * POST /api/auth/login
+ * Login de usuario (público)
+ */
+app.post('/api/auth/login', (req, res) => {
+  authController.login(req, res);
+});
+
+// --------------------------------------------
+// RUTAS PROTEGIDAS (requieren autenticación)
+// --------------------------------------------
+
+// Aplicar middleware de autenticación a todas las rutas siguientes
+app.use('/api', verificarToken);
+
+/**
+ * GET /api/auth/perfil
+ * Obtener perfil del usuario autenticado
+ */
+app.get('/api/auth/perfil', (req, res) => {
+  authController.obtenerPerfil(req, res);
+});
+
+/**
+ * PUT /api/auth/cambiar-password
+ * Cambiar contraseña
+ */
+app.put('/api/auth/cambiar-password', (req, res) => {
+  authController.cambiarPassword(req, res);
 });
 
 // --------------------------------------------
@@ -323,108 +372,7 @@ app.get('/api/pedidos/:id', (req, res) => {
  * Crear un nuevo pedido
  */
 app.post('/api/pedidos', (req, res) => {
-  const { v4: uuidv4 } = require('uuid');
-  const {
-    tipo, mesa_id, cliente_nombre, cliente_telefono,
-    mesero_id, detalles, desechables
-  } = req.body;
-
-  // Validaciones
-  if (!tipo || !mesero_id || !detalles || detalles.length === 0) {
-    return res.status(400).json({
-      success: false,
-      error: 'Campos requeridos: tipo, mesero_id, detalles'
-    });
-  }
-
-  // Calcular total
-  let totalCents = 0;
-
-  const detallesProcesados = detalles.map(d => {
-    const subtotalCents = Math.round(d.precio_unitario * 100) * d.cantidad;
-    totalCents += subtotalCents;
-    return {
-      id: uuidv4(),
-      pedido_id: null, // Se asignará después
-      producto_id: d.producto_id,
-      cantidad: d.cantidad,
-      precio_unitario: Math.round(d.precio_unitario * 100),
-      subtotal: subtotalCents,
-      notas: d.notas || ''
-    };
-  });
-
-  const desechablesProcesados = (desechables || []).map(d => {
-    const subtotalCents = Math.round(d.precio_unitario * 100) * d.cantidad;
-    totalCents += subtotalCents;
-    return {
-      id: uuidv4(),
-      pedido_id: null,
-      producto_id: d.producto_id,
-      cantidad: d.cantidad,
-      subtotal: subtotalCents
-    };
-  });
-
-  // Obtener turno activo
-  const turnoActivo = db.prepare(`
-    SELECT id FROM caja_turnos WHERE estado = 'abierto' LIMIT 1
-  `).get();
-
-  // Crear pedido
-  const pedidoId = uuidv4();
-
-  db.prepare(`
-    INSERT INTO pedidos (id, tipo, mesa_id, cliente_nombre, cliente_telefono, mesero_id, total, turno_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    pedidoId, tipo, mesa_id || null, cliente_nombre || null,
-    cliente_telefono || null, mesero_id, totalCents, turnoActivo?.id || null
-  );
-
-  // Insertar detalles
-  const insertDetalle = db.prepare(`
-    INSERT INTO detalles_pedido (id, pedido_id, producto_id, cantidad, precio_unitario, subtotal, notas)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const d of detallesProcesados) {
-    insertDetalle.run(d.id, pedidoId, d.producto_id, d.cantidad, d.precio_unitario, d.subtotal, d.notas);
-  }
-
-  // Insertar desechables
-  const insertDesechable = db.prepare(`
-    INSERT INTO pedido_desechables (id, pedido_id, producto_id, cantidad, subtotal)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  for (const d of desechablesProcesados) {
-    insertDesechable.run(d.id, pedidoId, d.producto_id, d.cantidad, d.subtotal);
-  }
-
-  // Si es mesa, marcar como ocupada
-  if (tipo === 'mesa' && mesa_id) {
-    db.prepare(`
-      UPDATE mesas SET estado = 'ocupada', actualizado_en = datetime('now') WHERE id = ?
-    `).run(mesa_id);
-  }
-
-  // Emitir evento WebSocket
-  io.emit('nuevo_pedido', {
-    pedido_id: pedidoId,
-    tipo,
-    mesa: mesa_id ? db.prepare('SELECT numero_mesa FROM mesas WHERE id = ?').get(mesa_id)?.numero_mesa : null
-  });
-
-  res.json({
-    success: true,
-    message: 'Pedido creado exitosamente',
-    data: {
-      pedido_id: pedidoId,
-      total: cobroController.fromCents(totalCents),
-      turno_id: turnoActivo?.id || null
-    }
-  });
+  cobroController.crearPedido(req, res);
 });
 
 /**

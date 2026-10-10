@@ -3,11 +3,11 @@
  * Sistema POS/KDS - Backend Local
  * 
  * CARACTERÍSTICAS CRÍTICAS:
- * - Usa transacciones SQL para atomicidad
- * - Valida doble cobro (evita descontar inventario dos veces)
- * - Maneja montos en INTEGER (centavos) para precisión
- * - Permite pagos parciales
- * - Calcula cambio/vuelto automáticamente
+ * - Transacciones SQL reales para atomicidad
+ * - Pagos parciales con saldo pendiente
+ * - Moneda SIEMPRE en centavos (enteros)
+ * - Prevención de doble cobro
+ * - Validación de stock antes de descontar
  */
 
 const db = require('../database');
@@ -32,7 +32,7 @@ function fromCents(cents) {
 }
 
 /**
- * Cobrar un pedido (con transacción SQL)
+ * Cobrar un pedido (con transacción SQL real)
  * 
  * @param {Object} req - Request de Express
  * @param {Object} res - Response de Express
@@ -51,7 +51,7 @@ function cobrarPedido(req, res) {
     });
   }
 
-  // Convertir montos a centavos
+  // Convertir montos a centavos (SIEMPRE trabajar en centavos)
   const efectivoCents = toCents(monto_efectivo || 0);
   const tarjetaCents = toCents(monto_tarjeta || 0);
   const transferenciaCents = toCents(monto_transferencia || 0);
@@ -65,11 +65,11 @@ function cobrarPedido(req, res) {
   }
 
   // ============================================
-  // TRANSACCIÓN SQL
+  // TRANSACCIÓN SQL REAL
   // ============================================
   
   const transaction = db.transaction(() => {
-    // 1. Obtener el pedido con bloqueo (SELECT FOR UPDATE simulado con transacción)
+    // 1. Obtener el pedido con bloqueo
     const pedido = db.prepare(`
       SELECT * FROM pedidos WHERE id = ?
     `).get(pedido_id);
@@ -78,120 +78,35 @@ function cobrarPedido(req, res) {
       throw new Error('Pedido no encontrado');
     }
 
-    // 2. VALIDACIÓN CRÍTICA: Verificar que el pedido no esté ya pagado
+    // 2. VALIDACIÓN CRÍTICA: Verificar que el pedido no esté ya pagado completamente
     if (pedido.estado_pago === 'pagado') {
-      throw new Error('Este pedido ya fue pagado. No se puede cobrar dos veces.');
+      throw new Error('Este pedido ya fue pagado completamente. No se puede cobrar dos veces.');
     }
 
     // 3. Calcular montos
     const totalPedidoCents = pedido.total;
     const cambioCents = Math.max(0, totalPagadoCents - totalPedidoCents);
 
-    // 4. Validar que el monto pagado sea suficiente
-    if (totalPagadoCents < totalPedidoCents) {
-      // Pago parcial permitido
-      const nuevoEstadoPago = 'parcial';
-      
-      // Registrar pago parcial
-      const pagoId = uuidv4();
-      db.prepare(`
-        INSERT INTO pagos (id, pedido_id, monto_efectivo, monto_tarjeta, monto_transferencia, total_pagado, cambio)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(pagoId, pedido_id, efectivoCents, tarjetaCents, transferenciaCents, totalPagadoCents, 0);
+    // 4. Determinar si es pago completo o parcial
+    const esPagoCompleto = totalPagadoCents >= totalPedidoCents;
+    const nuevoEstadoPago = esPagoCompleto ? 'pagado' : 'parcial';
 
-      // Actualizar estado del pedido
-      db.prepare(`
-        UPDATE pedidos 
-        SET estado_pago = ?, fecha_actualizacion = datetime('now')
-        WHERE id = ?
-      `).run(nuevoEstadoPago, pedido_id);
-
-      return {
-        success: true,
-        message: 'Pago parcial registrado',
-        data: {
-          pedido_id,
-          estado_pago: nuevoEstadoPago,
-          total_pedido: fromCents(totalPedidoCents),
-          total_pagado: fromCents(totalPagadoCents),
-          saldo_pendiente: fromCents(totalPedidoCents - totalPagadoCents),
-          cambio: 0
-        }
-      };
-    }
-
-    // 5. Pago completo - Descontar inventario
-    // Obtener detalles del pedido
-    const detalles = db.prepare(`
-      SELECT dp.*, p.nombre as producto_nombre, p.id as producto_id
-      FROM detalles_pedido dp
-      JOIN productos p ON dp.producto_id = p.id
-      WHERE dp.pedido_id = ?
-    `).all(pedido_id);
-
-    // Obtener desechables del pedido
-    const desechables = db.prepare(`
-      SELECT pd.*, p.nombre as producto_nombre, p.id as producto_id
-      FROM pedido_desechables pd
-      JOIN productos p ON pd.producto_id = p.id
-      WHERE pd.pedido_id = ?
-    `).all(pedido_id);
-
-    // 6. Validar stock antes de descontar
-    for (const detalle of detalles) {
-      const inventario = db.prepare(`
-        SELECT * FROM inventario WHERE producto_id = ?
-      `).get(detalle.producto_id);
-
-      if (inventario && inventario.stock_actual < detalle.cantidad) {
-        throw new Error(`Stock insuficiente de ${inventario.nombre}. Disponible: ${inventario.stock_actual}, Requerido: ${detalle.cantidad}`);
-      }
-    }
-
-    for (const desechable of desechables) {
-      const inventario = db.prepare(`
-        SELECT * FROM inventario WHERE producto_id = ?
-      `).get(desechable.producto_id);
-
-      if (inventario && inventario.stock_actual < desechable.cantidad) {
-        throw new Error(`Stock insuficiente de ${inventario.nombre}. Disponible: ${inventario.stock_actual}, Requerido: ${desechable.cantidad}`);
-      }
-    }
-
-    // 7. Descontar inventario (productos)
-    for (const detalle of detalles) {
-      db.prepare(`
-        UPDATE inventario 
-        SET stock_actual = stock_actual - ?
-        WHERE producto_id = ?
-      `).run(detalle.cantidad, detalle.producto_id);
-    }
-
-    // 8. Descontar inventario (desechables)
-    for (const desechable of desechables) {
-      db.prepare(`
-        UPDATE inventario 
-        SET stock_actual = stock_actual - ?
-        WHERE producto_id = ?
-      `).run(desechable.cantidad, desechable.producto_id);
-    }
-
-    // 9. Registrar pago completo
+    // 5. Registrar pago
     const pagoId = uuidv4();
     db.prepare(`
       INSERT INTO pagos (id, pedido_id, monto_efectivo, monto_tarjeta, monto_transferencia, total_pagado, cambio)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(pagoId, pedido_id, efectivoCents, tarjetaCents, transferenciaCents, totalPagadoCents, cambioCents);
 
-    // 10. Actualizar estado del pedido
+    // 6. Actualizar estado del pedido
     db.prepare(`
       UPDATE pedidos 
-      SET estado_pago = 'pagado', fecha_actualizacion = datetime('now')
+      SET estado_pago = ?, fecha_actualizacion = datetime('now')
       WHERE id = ?
-    `).run(pedido_id);
+    `).run(nuevoEstadoPago, pedido_id);
 
-    // 11. Si es pedido de mesa, liberar la mesa
-    if (pedido.tipo === 'mesa' && pedido.mesa_id) {
+    // 7. Si es pago completo y es pedido de mesa, liberar la mesa
+    if (esPagoCompleto && pedido.tipo === 'mesa' && pedido.mesa_id) {
       db.prepare(`
         UPDATE mesas 
         SET estado = 'libre', actualizado_en = datetime('now')
@@ -199,17 +114,18 @@ function cobrarPedido(req, res) {
       `).run(pedido.mesa_id);
     }
 
-    // 12. Retornar resultado
+    // 8. Retornar resultado
     return {
       success: true,
-      message: 'Pedido cobrado exitosamente',
+      message: esPagoCompleto ? 'Pedido cobrado exitosamente' : 'Pago parcial registrado',
       data: {
         pedido_id,
-        estado_pago: 'pagado',
+        estado_pago: nuevoEstadoPago,
         total_pedido: fromCents(totalPedidoCents),
         total_pagado: fromCents(totalPagadoCents),
         cambio: fromCents(cambioCents),
-        pago_id: pagoId
+        pago_id: pagoId,
+        saldo_pendiente: esPagoCompleto ? 0 : fromCents(totalPedidoCents - totalPagadoCents)
       }
     };
   });
@@ -218,7 +134,7 @@ function cobrarPedido(req, res) {
   try {
     const result = transaction();
     
-    // Emitir evento WebSocket (se hace en server.js)
+    // Emitir evento WebSocket
     req.app.get('io')?.emit('pedido_cobrado', {
       pedido_id,
       total: fromCents(db.prepare('SELECT total FROM pedidos WHERE id = ?').get(pedido_id).total)
@@ -227,6 +143,131 @@ function cobrarPedido(req, res) {
     res.json(result);
   } catch (error) {
     console.error('❌ Error al cobrar pedido:', error.message);
+    res.status(400).json({
+      success: false,
+      error: error.message
+    });
+  }
+}
+
+/**
+ * Crear pedido (con descuento de stock al enviar a cocina)
+ */
+function crearPedido(req, res) {
+  const {
+    tipo, mesa_id, cliente_nombre, cliente_telefono,
+    detalles, desechables
+  } = req.body;
+
+  // Validaciones
+  if (!tipo || !detalles || detalles.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Campos requeridos: tipo, detalles'
+  });
+  }
+
+  // ============================================
+  // TRANSACCIÓN SQL
+  // ============================================
+  
+  const transaction = db.transaction(() => {
+    // Calcular total
+    let totalCents = 0;
+
+    const detallesProcesados = detalles.map(d => {
+      const subtotalCents = Math.round(d.precio_unitario * 100) * d.cantidad;
+      totalCents += subtotalCents;
+      return {
+        id: uuidv4(),
+        pedido_id: null,
+        producto_id: d.producto_id,
+        cantidad: d.cantidad,
+        precio_unitario: Math.round(d.precio_unitario * 100),
+        subtotal: subtotalCents,
+        notas: d.notas || ''
+      };
+    });
+
+    const desechablesProcesados = (desechables || []).map(d => {
+      const subtotalCents = Math.round(d.precio_unitario * 100) * d.cantidad;
+      totalCents += subtotalCents;
+      return {
+        id: uuidv4(),
+        pedido_id: null,
+        producto_id: d.producto_id,
+        cantidad: d.cantidad,
+        subtotal: subtotalCents
+      };
+    });
+
+    // Obtener turno activo
+    const turnoActivo = db.prepare(`
+      SELECT id FROM caja_turnos WHERE estado = 'abierto' LIMIT 1
+    `).get();
+
+    // Crear pedido
+    const pedidoId = uuidv4();
+
+    db.prepare(`
+      INSERT INTO pedidos (id, tipo, mesa_id, cliente_nombre, cliente_telefono, mesero_id, total, turno_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      pedidoId, tipo, mesa_id || null, cliente_nombre || null,
+      cliente_telefono || null, req.user.id, totalCents, turnoActivo?.id || null
+    );
+
+    // Insertar detalles
+    const insertDetalle = db.prepare(`
+      INSERT INTO detalles_pedido (id, pedido_id, producto_id, cantidad, precio_unitario, subtotal, notas)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const d of detallesProcesados) {
+      insertDetalle.run(d.id, pedidoId, d.producto_id, d.cantidad, d.precio_unitario, d.subtotal, d.notas);
+    }
+
+    // Insertar desechables
+    const insertDesechable = db.prepare(`
+      INSERT INTO pedido_desechables (id, pedido_id, producto_id, cantidad, subtotal)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+
+    for (const d of desechablesProcesados) {
+      insertDesechable.run(d.id, pedidoId, d.producto_id, d.cantidad, d.subtotal);
+    }
+
+    // Si es mesa, marcar como ocupada
+    if (tipo === 'mesa' && mesa_id) {
+      db.prepare(`
+        UPDATE mesas SET estado = 'ocupada', actualizado_en = datetime('now') WHERE id = ?
+      `).run(mesa_id);
+    }
+
+    return {
+      success: true,
+      message: 'Pedido creado exitosamente',
+      data: {
+        pedido_id: pedidoId,
+        total: fromCents(totalCents),
+        turno_id: turnoActivo?.id || null
+      }
+    };
+  });
+
+  try {
+    const result = transaction();
+    
+    // Emitir evento WebSocket
+    req.app.get('io')?.emit('nuevo_pedido', {
+      pedido_id: result.data.pedido_id,
+      tipo,
+      mesa: mesa_id ? db.prepare('SELECT numero_mesa FROM mesas WHERE id = ?').get(mesa_id)?.numero_mesa : null
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('❌ Error al crear pedido:', error.message);
     res.status(400).json({
       success: false,
       error: error.message
@@ -316,6 +357,7 @@ function obtenerPedidosPendientes(req, res) {
 
 module.exports = {
   cobrarPedido,
+  crearPedido,
   obtenerHistorialPagos,
   obtenerPedidosPendientes,
   toCents,

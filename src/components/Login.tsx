@@ -1,26 +1,29 @@
 import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { UtensilsCrossed, Lock, User } from 'lucide-react';
 
 export default function Login() {
-  const { login } = useApp();
+  const { login } = useAuth();
   const [usuario, setUsuario] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
-    setTimeout(() => {
-      const success = login(usuario, password);
+    try {
+      const success = await login(usuario, password);
       if (!success) {
         setError('Usuario o contraseña incorrectos');
       }
+    } catch (err) {
+      setError('Error de conexión con el servidor');
+    } finally {
       setLoading(false);
-    }, 300);
+    }
   };
 
   return (
