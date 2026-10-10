@@ -8,14 +8,17 @@ import OrderSummaryModal from '../components/OrderSummaryModal';
 import CashRegisterOpenModal from '../components/CashRegisterOpenModal';
 import MesaConfigModal from '../components/MesaConfigModal';
 import InventarioEditModal from '../components/InventarioEditModal';
+import Configuracion from '../components/admin/Configuracion';
+import ReporteDiario from '../components/admin/ReporteDiario';
 import {
   LogOut, LayoutDashboard, Grid3X3, UtensilsCrossed, Package,
   CalendarDays, Wallet, Users, Plus, Edit2, Trash2, Unlock,
   TrendingUp, AlertTriangle, DollarSign, ShoppingBag,
-  ClipboardList, CreditCard, Eye, Filter, X, Search, ChefHat, Settings
+  ClipboardList, CreditCard, Eye, Filter, X, Search, ChefHat, Settings,
+  FileBarChart, Settings as SettingsIcon
 } from 'lucide-react';
 
-type AdminTab = 'dashboard' | 'mesas' | 'ordenes' | 'menu' | 'inventario' | 'reservas' | 'caja' | 'usuarios' | 'cocina';
+type AdminTab = 'dashboard' | 'mesas' | 'ordenes' | 'menu' | 'inventario' | 'reservas' | 'caja' | 'usuarios' | 'cocina' | 'reportes' | 'configuracion';
 
 export default function AdminView() {
   const { user, pedidos, mesas, productos, inventario, reservas, cajaTurnoActivo, logout, refreshData } = useApp();
@@ -88,6 +91,8 @@ export default function AdminView() {
     { id: 'inventario' as const, label: 'Inventario', icon: Package },
     { id: 'reservas' as const, label: 'Reservas', icon: CalendarDays },
     { id: 'caja' as const, label: 'Caja', icon: Wallet },
+    { id: 'reportes' as const, label: 'Reportes', icon: FileBarChart },
+    { id: 'configuracion' as const, label: 'Configuración', icon: SettingsIcon },
     { id: 'usuarios' as const, label: 'Usuarios', icon: Users },
   ];
 
@@ -1187,6 +1192,8 @@ export default function AdminView() {
         {tab === 'inventario' && renderInventario()}
         {tab === 'reservas' && renderReservas()}
         {tab === 'caja' && renderCaja()}
+        {tab === 'reportes' && <ReporteDiario />}
+        {tab === 'configuracion' && <Configuracion />}
         {tab === 'usuarios' && renderUsuarios()}
       </main>
 
