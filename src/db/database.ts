@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import {
   Usuario, Mesa, Producto, Inventario, Pedido, Reserva,
-  DetallePedido, PedidoDesechable, Pago, CajaApertura,
+  DetallePedido, PedidoDesechable, Pago, CajaApertura, CajaTurno,
   EstadoCocina, EstadoPago, EstadoMesa
 } from '../types';
 
@@ -13,6 +13,7 @@ const DB_KEYS = {
   pedidos: 'pos_pedidos',
   reservas: 'pos_reservas',
   caja: 'pos_caja',
+  cajaTurnos: 'pos_caja_turnos',
   session: 'pos_session',
 };
 
@@ -416,4 +417,104 @@ export function toggleUsuarioActivo(userId: string): void {
     usuarios[idx].activo = !usuarios[idx].activo;
     setCollection(DB_KEYS.usuarios, usuarios);
   }
+}
+
+// ============ CAJA TURNOS (tabla caja_turnos) ============
+export function getCajaTurnos(): CajaTurno[] {
+  return getCollection<CajaTurno>(DB_KEYS.cajaTurnos);
+}
+
+export function getCajaTurnoActivo(): CajaTurno | null {
+  const turnos = getCajaTurnos();
+  return turnos.find(t => t.estado === 'abierto') || null;
+}
+
+export function abrirCajaTurno(usuarioId: string, montoApertura: number): CajaTurno {
+  // Verificar que no haya turno abierto
+  const activo = getCajaTurnoActivo();
+  if (activo) throw new Error('Ya existe una caja abierta');
+
+  const turnos = getCajaTurnos();
+  const nuevoTurno: CajaTurno = {
+    id: uuidv4(),
+    usuario_id: usuarioId,
+    monto_apertura: montoApertura,
+    monto_cierre: null,
+    fecha_apertura: new Date().toISOString(),
+    fecha_cierre: null,
+    estado: 'abierto',
+    total_ventas: 0,
+    total_efectivo: 0,
+    total_tarjeta: 0,
+    total_transferencia: 0,
+  };
+  turnos.push(nuevoTurno);
+  setCollection(DB_KEYS.cajaTurnos, turnos);
+
+  // También registrar en caja (legacy)
+  abrirCaja(usuarioId, montoApertura);
+
+  return nuevoTurno;
+}
+
+export function cerrarCajaTurno(turnoId: string, montoCierre: number): CajaTurno | null {
+  const turnos = getCajaTurnos();
+  const idx = turnos.findIndex(t => t.id === turnoId);
+  if (idx < 0) return null;
+
+  // Calcular totales del período (TRANSACTION)
+  const fechaApertura = new Date(turnos[idx].fecha_apertura).getTime();
+  const pedidosDelTurno = getPedidos().filter(p => {
+    return p.estado_pago === 'pagado' && new Date(p.fecha_actualizacion).getTime() >= fechaApertura;
+  });
+
+  let totalVentas = 0;
+  let totalEfectivo = 0;
+  let totalTarjeta = 0;
+  let totalTransferencia = 0;
+
+  for (const pedido of pedidosDelTurno) {
+    for (const pago of pedido.pagos) {
+      totalEfectivo += pago.monto_efectivo;
+      totalTarjeta += pago.monto_tarjeta;
+      totalTransferencia += pago.monto_transferencia;
+      totalVentas += pago.total_pagado;
+    }
+  }
+
+  turnos[idx].monto_cierre = montoCierre;
+  turnos[idx].fecha_cierre = new Date().toISOString();
+  turnos[idx].estado = 'cerrado';
+  turnos[idx].total_ventas = totalVentas;
+  turnos[idx].total_efectivo = totalEfectivo;
+  turnos[idx].total_tarjeta = totalTarjeta;
+  turnos[idx].total_transferencia = totalTransferencia;
+
+  setCollection(DB_KEYS.cajaTurnos, turnos);
+
+  // Cerrar caja legacy
+  cerrarCaja(turnoId, montoCierre);
+
+  return turnos[idx];
+}
+
+// ============ PEDIDOS DEL DÍA ============
+export function getPedidosDelDia(): Pedido[] {
+  const today = new Date().toDateString();
+  return getPedidos().filter(p => new Date(p.fecha_creacion).toDateString() === today);
+}
+
+export function getPedidosPendientesPago(): Pedido[] {
+  return getPedidosDelDia().filter(p => p.estado_pago === 'pendiente');
+}
+
+// ============ COBRAR DESDE ADMIN (transacción) ============
+export function cobrarPedidoDesdeAdmin(
+  pedidoId: string,
+  montoEfectivo: number,
+  montoTarjeta: number,
+  montoTransferencia: number
+): { success: boolean; error?: string; pedido?: Pedido } {
+  // Reutiliza la transacción existente
+  return cobrarPedido(pedidoId, montoEfectivo, montoTarjeta, montoTransferencia);
 }

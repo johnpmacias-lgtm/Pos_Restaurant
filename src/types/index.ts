@@ -103,6 +103,20 @@ export interface CajaApertura {
   monto_final: number | null;
 }
 
+export interface CajaTurno {
+  id: string;
+  usuario_id: string;
+  monto_apertura: number;
+  monto_cierre: number | null;
+  fecha_apertura: string;
+  fecha_cierre: string | null;
+  estado: 'abierto' | 'cerrado';
+  total_ventas: number;
+  total_efectivo: number;
+  total_tarjeta: number;
+  total_transferencia: number;
+}
+
 // WebSocket events
 export interface WSEvent {
   type: 'nuevo_pedido' | 'estado_cocina_actualizado' | 'mesa_liberada' | 'pedido_cobrado' | 'inventario_actualizado';

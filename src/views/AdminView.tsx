@@ -1,23 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { Producto, Inventario, Mesa, Reserva } from '../types';
+import { Producto, Inventario, Mesa, Reserva, Pedido } from '../types';
 import * as db from '../db/database';
 import { v4 as uuidv4 } from 'uuid';
+import PaymentModal from '../components/PaymentModal';
+import OrderSummaryModal from '../components/OrderSummaryModal';
+import CashRegisterOpenModal from '../components/CashRegisterOpenModal';
 import {
   LogOut, LayoutDashboard, Grid3X3, UtensilsCrossed, Package,
   CalendarDays, Wallet, Users, Plus, Edit2, Trash2, Unlock,
-  TrendingUp, TrendingDown, DollarSign, ShoppingBag, AlertTriangle
+  TrendingUp, AlertTriangle, DollarSign, ShoppingBag,
+  ClipboardList, CreditCard, Eye, Filter, X
 } from 'lucide-react';
 
-type AdminTab = 'dashboard' | 'mesas' | 'menu' | 'inventario' | 'reservas' | 'caja' | 'usuarios';
+type AdminTab = 'dashboard' | 'mesas' | 'ordenes' | 'menu' | 'inventario' | 'reservas' | 'caja' | 'usuarios';
 
 export default function AdminView() {
-  const { user, pedidos, mesas, productos, inventario, reservas, logout, refreshData } = useApp();
+  const { user, pedidos, mesas, productos, inventario, reservas, cajaTurnoActivo, logout, refreshData } = useApp();
   const [tab, setTab] = useState<AdminTab>('dashboard');
-  const [editingProducto, setEditingProducto] = useState<Producto | null>(null);
   const [showNewProducto, setShowNewProducto] = useState(false);
   const [showNewReserva, setShowNewReserva] = useState(false);
   const [showNewUsuario, setShowNewUsuario] = useState(false);
+  const [menuFilter, setMenuFilter] = useState<string>('Todos');
+  const [cajaRequiereApertura, setCajaRequiereApertura] = useState(false);
+
+  // Modals
+  const [paymentPedido, setPaymentPedido] = useState<Pedido | null>(null);
+  const [summaryPedido, setSummaryPedido] = useState<Pedido | null>(null);
 
   // Form states
   const [newProd, setNewProd] = useState({ nombre: '', precio_base: 0, categoria: 'Platos', es_desechable: false });
@@ -26,7 +35,7 @@ export default function AdminView() {
   const [cajaMontoInicial, setCajaMontoInicial] = useState(0);
   const [cajaMontoFinal, setCajaMontoFinal] = useState(0);
 
-  const cajaActiva = db.getCaja().find(c => !c.fecha_cierre);
+  // Computed
   const ventasHoy = pedidos.filter(p => {
     const today = new Date().toDateString();
     return new Date(p.fecha_creacion).toDateString() === today && p.estado_pago === 'pagado';
@@ -34,9 +43,26 @@ export default function AdminView() {
   const totalVentasHoy = ventasHoy.reduce((sum, p) => sum + p.total, 0);
   const stockBajo = inventario.filter(i => i.stock_actual <= i.stock_minimo);
 
+  // Categorías dinámicas para filtro
+  const categorias = ['Todos', ...Array.from(new Set(productos.map(p => p.categoria)))];
+  const productosFiltrados = menuFilter === 'Todos'
+    ? productos
+    : productos.filter(p => p.categoria === menuFilter);
+
+  // Pedidos del día
+  const pedidosDelDia = db.getPedidosDelDia();
+
+  // Control de caja
+  useEffect(() => {
+    if (tab === 'caja' && !cajaTurnoActivo) {
+      setCajaRequiereApertura(true);
+    }
+  }, [tab, cajaTurnoActivo]);
+
   const tabs = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'mesas' as const, label: 'Mesas', icon: Grid3X3 },
+    { id: 'ordenes' as const, label: 'Órdenes', icon: ClipboardList },
     { id: 'menu' as const, label: 'Menú', icon: UtensilsCrossed },
     { id: 'inventario' as const, label: 'Inventario', icon: Package },
     { id: 'reservas' as const, label: 'Reservas', icon: CalendarDays },
@@ -44,12 +70,43 @@ export default function AdminView() {
     { id: 'usuarios' as const, label: 'Usuarios', icon: Users },
   ];
 
+  // ============ MEJORA A: INTERACTIVIDAD EN MESAS ============
+  const handleMesaClick = (mesa: Mesa) => {
+    const pedidoMesa = pedidos.find(p =>
+      p.mesa_id === mesa.id &&
+      p.estado_pago !== 'pagado' &&
+      p.tipo === 'mesa'
+    );
+
+    if (mesa.estado === 'libre') {
+      // Mesa libre → abrir toma de pedido (redirigir a vista mesero con mesa seleccionada)
+      // Abrimos el resumen para crear pedido
+      setSummaryPedido(null);
+      // Emitir evento para que el mesero abra la mesa
+      window.location.hash = '#mesero/mesa/' + mesa.id;
+      // Como estamos en admin, mostramos un modal de info
+      alert(`Mesa ${mesa.numero_mesa} está libre. Cambie a la vista de Mesero para tomar el pedido.`);
+    } else if (mesa.estado === 'ocupada' && pedidoMesa) {
+      // Mesa ocupada → mostrar resumen + botón cobrar
+      setSummaryPedido(pedidoMesa);
+    } else if (mesa.estado === 'reservada') {
+      // Mesa reservada → mostrar opción de liberar
+      const reserva = reservas.find(r => r.mesa_id === mesa.id && r.estado === 'activa');
+      if (reserva) {
+        if (confirm(`Mesa reservada para "${reserva.cliente_nombre}".\n¿Desea liberar la mesa?`)) {
+          db.liberarReserva(reserva.id);
+          db.emitEvent('mesa_liberada', { mesa_id: mesa.id });
+          refreshData();
+        }
+      }
+    }
+  };
+
   // ============ DASHBOARD ============
   const renderDashboard = () => (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-white">Panel de Control</h2>
 
-      {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-gradient-to-br from-green-600 to-green-800 rounded-xl p-5">
           <div className="flex items-center justify-between">
@@ -96,7 +153,6 @@ export default function AdminView() {
         </div>
       </div>
 
-      {/* Recent activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
           <h3 className="text-white font-bold mb-4 flex items-center gap-2">
@@ -141,50 +197,218 @@ export default function AdminView() {
     </div>
   );
 
-  // ============ MESAS ============
+  // ============ MEJORA A: MESAS CON INTERACTIVIDAD ============
   const renderMesas = () => (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-white">Gestión de Mesas</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-white">Gestión de Mesas</h2>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"></span><span className="text-slate-300">Libre</span></span>
+          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-orange-500"></span><span className="text-slate-300">Ocupada</span></span>
+          <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-purple-500"></span><span className="text-slate-300">Reservada</span></span>
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-        {mesas.map(mesa => (
-          <div key={mesa.id} className={`rounded-xl p-4 border-2 ${
-            mesa.estado === 'libre' ? 'bg-green-900/20 border-green-700' :
-            mesa.estado === 'ocupada' ? 'bg-orange-900/20 border-orange-700' :
-            'bg-purple-900/20 border-purple-700'
-          }`}>
-            <div className="text-center">
-              <p className="text-3xl font-bold text-white">{mesa.numero_mesa}</p>
-              <p className="text-slate-400 text-sm">{mesa.puestos} pax • {mesa.zona}</p>
-              <div className={`mt-2 text-xs font-bold px-3 py-1 rounded-full inline-block ${
-                mesa.estado === 'libre' ? 'bg-green-500/20 text-green-300' :
-                mesa.estado === 'ocupada' ? 'bg-orange-500/20 text-orange-300' :
-                'bg-purple-500/20 text-purple-300'
-              }`}>
-                {mesa.estado.toUpperCase()}
+        {mesas.map(mesa => {
+          const pedidoMesa = pedidos.find(p => p.mesa_id === mesa.id && p.estado_pago !== 'pagado' && p.tipo === 'mesa');
+          return (
+            <button
+              key={mesa.id}
+              onClick={() => handleMesaClick(mesa)}
+              className={`rounded-xl p-4 border-2 transition-all hover:scale-105 active:scale-95 text-left ${
+                mesa.estado === 'libre' ? 'bg-green-900/20 border-green-700 hover:border-green-400' :
+                mesa.estado === 'ocupada' ? 'bg-orange-900/20 border-orange-700 hover:border-orange-400' :
+                'bg-purple-900/20 border-purple-700 hover:border-purple-400'
+              }`}
+            >
+              <div className="text-center">
+                <p className="text-3xl font-bold text-white">{mesa.numero_mesa}</p>
+                <p className="text-slate-400 text-sm">{mesa.puestos} pax • {mesa.zona}</p>
+                <div className={`mt-2 text-xs font-bold px-3 py-1 rounded-full inline-block ${
+                  mesa.estado === 'libre' ? 'bg-green-500/20 text-green-300' :
+                  mesa.estado === 'ocupada' ? 'bg-orange-500/20 text-orange-300' :
+                  'bg-purple-500/20 text-purple-300'
+                }`}>
+                  {mesa.estado === 'libre' ? '🟢 LIBRE' : mesa.estado === 'ocupada' ? '🟠 OCUPADA' : '🟣 RESERVADA'}
+                </div>
               </div>
-            </div>
-            {mesa.estado === 'reservada' && (
-              <button
-                onClick={() => {
-                  const reserva = reservas.find(r => r.mesa_id === mesa.id && r.estado === 'activa');
-                  if (reserva) {
-                    db.liberarReserva(reserva.id);
-                    db.emitEvent('mesa_liberada', { mesa_id: mesa.id });
-                    refreshData();
-                  }
-                }}
-                className="w-full mt-3 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1"
-              >
-                <Unlock className="w-3 h-3" /> Liberar
-              </button>
-            )}
-          </div>
-        ))}
+              {pedidoMesa && (
+                <div className="mt-3 pt-3 border-t border-slate-700/50">
+                  <div className="flex items-center justify-between">
+                    <span className="text-white font-bold">${pedidoMesa.total.toFixed(0)}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      pedidoMesa.estado_pago === 'pagado' ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                    }`}>
+                      {pedidoMesa.estado_pago === 'pagado' ? '✓ Pagado' : '⏳ Por cobrar'}
+                    </span>
+                  </div>
+                  {mesa.estado === 'ocupada' && pedidoMesa.estado_pago !== 'pagado' && (
+                    <p className="text-orange-300 text-xs mt-1 text-center">👆 Click para cobrar</p>
+                  )}
+                </div>
+              )}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 
-  // ============ MENÚ ============
+  // ============ MEJORA B: ÓRDENES ACTIVAS ============
+  const renderOrdenes = () => {
+    const getEstadoCocinaBadge = (estado: string) => {
+      switch (estado) {
+        case 'pendiente': return <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded-full font-medium">⏳ Pendiente</span>;
+        case 'preparando': return <span className="text-xs bg-orange-500/20 text-orange-300 px-2 py-1 rounded-full font-medium">🔥 Preparando</span>;
+        case 'listo': return <span className="text-xs bg-green-500/20 text-green-300 px-2 py-1 rounded-full font-medium">✅ Listo</span>;
+        case 'entregado': return <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded-full font-medium">📦 Entregado</span>;
+        default: return <span className="text-xs bg-slate-500/20 text-slate-300 px-2 py-1 rounded-full">{estado}</span>;
+      }
+    };
+
+    const getEstadoPagoBadge = (estado: string) => {
+      switch (estado) {
+        case 'pagado': return <span className="text-xs bg-green-500/20 text-green-300 px-2 py-1 rounded-full font-medium">✓ Pagado</span>;
+        case 'pendiente': return <span className="text-xs bg-red-500/20 text-red-300 px-2 py-1 rounded-full font-medium">⏳ Pendiente</span>;
+        case 'parcial': return <span className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded-full font-medium">◐ Parcial</span>;
+        default: return <span className="text-xs bg-slate-500/20 text-slate-300 px-2 py-1 rounded-full">{estado}</span>;
+      }
+    };
+
+    const getClienteOMesa = (pedido: Pedido) => {
+      if (pedido.tipo === 'mesa') {
+        const mesa = mesas.find(m => m.id === pedido.mesa_id);
+        return `Mesa ${mesa?.numero_mesa || '?'}`;
+      }
+      return pedido.cliente_nombre || 'Sin nombre';
+    };
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-white">Órdenes del Día</h2>
+            <p className="text-slate-400 text-sm mt-1">
+              {pedidosDelDia.length} pedidos • {pedidosDelDia.filter(p => p.estado_pago === 'pendiente').length} por cobrar
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg text-sm">
+              Total: <span className="text-green-400 font-bold">${pedidosDelDia.filter(p => p.estado_pago === 'pagado').reduce((s, p) => s + p.total, 0).toFixed(2)}</span>
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-slate-700/50">
+                <tr>
+                  <th className="text-left text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">ID</th>
+                  <th className="text-left text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Tipo</th>
+                  <th className="text-left text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Cliente / Mesa</th>
+                  <th className="text-left text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Estado Cocina</th>
+                  <th className="text-left text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Estado Pago</th>
+                  <th className="text-right text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Total</th>
+                  <th className="text-center text-slate-300 text-xs font-medium px-4 py-3 uppercase tracking-wider">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700">
+                {pedidosDelDia.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-12 text-center text-slate-500">
+                      <ShoppingBag className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                      <p className="text-lg">No hay pedidos registrados hoy</p>
+                      <p className="text-sm mt-1">Los pedidos aparecerán aquí automáticamente</p>
+                    </td>
+                  </tr>
+                ) : (
+                  pedidosDelDia.slice().reverse().map(pedido => (
+                    <tr key={pedido.id} className={`hover:bg-slate-700/30 transition-colors ${
+                      pedido.estado_pago === 'pendiente' ? 'bg-red-900/5' : ''
+                    }`}>
+                      <td className="px-4 py-3">
+                        <span className="text-slate-400 text-xs font-mono">#{pedido.id.slice(-6)}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                          pedido.tipo === 'mesa' ? 'bg-blue-500/20 text-blue-300' : 'bg-purple-500/20 text-purple-300'
+                        }`}>
+                          {pedido.tipo === 'mesa' ? '🍽️ Mesa' : '📦 Llevar'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="text-white text-sm font-medium">{getClienteOMesa(pedido)}</span>
+                        {pedido.tipo === 'llevar' && pedido.cliente_telefono && (
+                          <p className="text-slate-500 text-xs">{pedido.cliente_telefono}</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">{getEstadoCocinaBadge(pedido.estado_cocina)}</td>
+                      <td className="px-4 py-3">{getEstadoPagoBadge(pedido.estado_pago)}</td>
+                      <td className="px-4 py-3 text-right">
+                        <span className="text-white font-bold">${pedido.total.toFixed(2)}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => setSummaryPedido(pedido)}
+                            className="text-blue-400 hover:text-blue-300 p-1.5 rounded-lg hover:bg-blue-500/10"
+                            title="Ver detalle"
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          {pedido.estado_pago === 'pendiente' && (
+                            <button
+                              onClick={() => setPaymentPedido(pedido)}
+                              className="bg-green-600 hover:bg-green-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors"
+                            >
+                              <CreditCard className="w-3.5 h-3.5" />
+                              Cobrar
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Summary footer */}
+        {pedidosDelDia.length > 0 && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <p className="text-slate-400 text-xs">Total Pedidos</p>
+              <p className="text-2xl font-bold text-white">{pedidosDelDia.length}</p>
+            </div>
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <p className="text-slate-400 text-xs">Por Cobrar</p>
+              <p className="text-2xl font-bold text-red-400">
+                ${pedidosDelDia.filter(p => p.estado_pago === 'pendiente').reduce((s, p) => s + p.total, 0).toFixed(2)}
+              </p>
+            </div>
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <p className="text-slate-400 text-xs">Cobrado</p>
+              <p className="text-2xl font-bold text-green-400">
+                ${pedidosDelDia.filter(p => p.estado_pago === 'pagado').reduce((s, p) => s + p.total, 0).toFixed(2)}
+              </p>
+            </div>
+            <div className="bg-slate-800 rounded-xl p-4 border border-slate-700">
+              <p className="text-slate-400 text-xs">Para Llevar</p>
+              <p className="text-2xl font-bold text-purple-400">
+                {pedidosDelDia.filter(p => p.tipo === 'llevar').length}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ============ MEJORA C: MENÚ CON FILTROS ============
   const renderMenu = () => (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -195,6 +419,39 @@ export default function AdminView() {
         >
           <Plus className="w-4 h-4" /> Nuevo Producto
         </button>
+      </div>
+
+      {/* CINTA DE OPCIONES / FILTROS (Mejora C) */}
+      <div className="bg-slate-800 rounded-xl p-3 border border-slate-700">
+        <div className="flex items-center gap-2 mb-2">
+          <Filter className="w-4 h-4 text-slate-400" />
+          <span className="text-slate-400 text-sm font-medium">Filtrar por categoría:</span>
+          <span className="text-slate-500 text-xs ml-auto">
+            {productosFiltrados.length} de {productos.length} productos
+          </span>
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {categorias.map(cat => (
+            <button
+              key={cat}
+              onClick={() => setMenuFilter(cat)}
+              className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-all ${
+                menuFilter === cat
+                  ? 'bg-orange-600 text-white shadow-lg shadow-orange-600/20'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white'
+              }`}
+            >
+              {cat === 'Todos' ? `🍴 ${cat}` :
+               cat === 'Platos' ? `🍽️ ${cat}` :
+               cat === 'Bebidas' ? `🥤 ${cat}` :
+               cat === 'Postres' ? `🍰 ${cat}` :
+               cat === 'Desechables' ? `📦 ${cat}` : cat}
+              <span className="ml-1.5 text-xs opacity-70">
+                ({cat === 'Todos' ? productos.length : productos.filter(p => p.categoria === cat).length})
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
 
       {showNewProducto && (
@@ -230,19 +487,13 @@ export default function AdminView() {
                 onClick={() => {
                   if (!newProd.nombre || !newProd.precio_base) return;
                   const prod: Producto = {
-                    id: uuidv4(),
-                    nombre: newProd.nombre,
-                    precio_base: newProd.precio_base,
-                    es_desechable: newProd.es_desechable,
-                    disponible: true,
-                    envase_predeterminado_id: null,
-                    categoria: newProd.categoria,
+                    id: uuidv4(), nombre: newProd.nombre, precio_base: newProd.precio_base,
+                    es_desechable: newProd.es_desechable, disponible: true,
+                    envase_predeterminado_id: null, categoria: newProd.categoria,
                   };
                   db.addProducto(prod);
-                  // Add to inventory
                   const inv: Inventario = {
-                    id: uuidv4(),
-                    producto_id: prod.id,
+                    id: uuidv4(), producto_id: prod.id,
                     stock_actual: newProd.es_desechable ? 200 : 50,
                     stock_minimo: newProd.es_desechable ? 50 : 10,
                     precio_costo: Math.round(newProd.precio_base * 0.4),
@@ -259,10 +510,7 @@ export default function AdminView() {
               >
                 Guardar
               </button>
-              <button
-                onClick={() => setShowNewProducto(false)}
-                className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm"
-              >
+              <button onClick={() => setShowNewProducto(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">
                 Cancelar
               </button>
             </div>
@@ -283,46 +531,48 @@ export default function AdminView() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-700">
-              {productos.map(prod => (
-                <tr key={prod.id} className="hover:bg-slate-700/30">
-                  <td className="px-4 py-3 text-white text-sm">{prod.nombre}</td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-1 rounded-full ${
-                      prod.es_desechable ? 'bg-purple-500/20 text-purple-300' : 'bg-blue-500/20 text-blue-300'
-                    }`}>
-                      {prod.categoria}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right text-white font-bold">${prod.precio_base.toFixed(2)}</td>
-                  <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={() => {
-                        db.updateProducto({ ...prod, disponible: !prod.disponible });
-                        refreshData();
-                      }}
-                      className={`text-xs px-2 py-1 rounded-full font-medium ${
-                        prod.disponible ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
-                      }`}
-                    >
-                      {prod.disponible ? 'Sí' : 'No'}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={() => {
-                        const newPrecio = prompt('Nuevo precio:', prod.precio_base.toString());
-                        if (newPrecio) {
-                          db.updateProducto({ ...prod, precio_base: Number(newPrecio) });
-                          refreshData();
-                        }
-                      }}
-                      className="text-blue-400 hover:text-blue-300 p-1"
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
+              {productosFiltrados.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                    No hay productos en esta categoría
                   </td>
                 </tr>
-              ))}
+              ) : (
+                productosFiltrados.map(prod => (
+                  <tr key={prod.id} className="hover:bg-slate-700/30">
+                    <td className="px-4 py-3 text-white text-sm">{prod.nombre}</td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs px-2 py-1 rounded-full ${
+                        prod.es_desechable ? 'bg-purple-500/20 text-purple-300' : 'bg-blue-500/20 text-blue-300'
+                      }`}>
+                        {prod.categoria}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right text-white font-bold">${prod.precio_base.toFixed(2)}</td>
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        onClick={() => { db.updateProducto({ ...prod, disponible: !prod.disponible }); refreshData(); }}
+                        className={`text-xs px-2 py-1 rounded-full font-medium ${
+                          prod.disponible ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'
+                        }`}
+                      >
+                        {prod.disponible ? 'Sí' : 'No'}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        onClick={() => {
+                          const newPrecio = prompt('Nuevo precio:', prod.precio_base.toString());
+                          if (newPrecio) { db.updateProducto({ ...prod, precio_base: Number(newPrecio) }); refreshData(); }
+                        }}
+                        className="text-blue-400 hover:text-blue-300 p-1"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
@@ -396,10 +646,7 @@ export default function AdminView() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-white">Reservas</h2>
-        <button
-          onClick={() => setShowNewReserva(true)}
-          className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
-        >
+        <button onClick={() => setShowNewReserva(true)} className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
           <Plus className="w-4 h-4" /> Nueva Reserva
         </button>
       </div>
@@ -408,58 +655,29 @@ export default function AdminView() {
         <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
           <h3 className="text-white font-bold mb-4">Nueva Reserva</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <select
-              value={newReserva.mesa_id}
-              onChange={e => setNewReserva({ ...newReserva, mesa_id: e.target.value })}
-              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white"
-            >
+            <select value={newReserva.mesa_id} onChange={e => setNewReserva({ ...newReserva, mesa_id: e.target.value })}
+              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white">
               <option value="">Seleccionar mesa</option>
               {mesas.filter(m => m.estado === 'libre').map(m => (
                 <option key={m.id} value={m.id}>Mesa {m.numero_mesa} ({m.puestos} pax - {m.zona})</option>
               ))}
             </select>
-            <input
-              type="text"
-              value={newReserva.cliente_nombre}
-              onChange={e => setNewReserva({ ...newReserva, cliente_nombre: e.target.value })}
-              placeholder="Nombre del cliente"
-              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400"
-            />
-            <input
-              type="datetime-local"
-              value={newReserva.fecha_hora}
-              onChange={e => setNewReserva({ ...newReserva, fecha_hora: e.target.value })}
-              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white"
-            />
-            <input
-              type="text"
-              value={newReserva.nota}
-              onChange={e => setNewReserva({ ...newReserva, nota: e.target.value })}
-              placeholder="Nota (opcional)"
-              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400"
-            />
+            <input type="text" value={newReserva.cliente_nombre} onChange={e => setNewReserva({ ...newReserva, cliente_nombre: e.target.value })}
+              placeholder="Nombre del cliente" className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400" />
+            <input type="datetime-local" value={newReserva.fecha_hora} onChange={e => setNewReserva({ ...newReserva, fecha_hora: e.target.value })}
+              className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white" />
+            <input type="text" value={newReserva.nota} onChange={e => setNewReserva({ ...newReserva, nota: e.target.value })}
+              placeholder="Nota (opcional)" className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400" />
             <div className="flex gap-2 sm:col-span-2">
-              <button
-                onClick={() => {
-                  if (!newReserva.mesa_id || !newReserva.cliente_nombre || !newReserva.fecha_hora) return;
-                  db.crearReserva({
-                    mesa_id: newReserva.mesa_id,
-                    cliente_nombre: newReserva.cliente_nombre,
-                    fecha_hora: newReserva.fecha_hora,
-                    nota: newReserva.nota,
-                    estado: 'activa',
-                  });
-                  refreshData();
-                  setShowNewReserva(false);
-                  setNewReserva({ mesa_id: '', cliente_nombre: '', fecha_hora: '', nota: '' });
-                }}
-                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold"
-              >
+              <button onClick={() => {
+                if (!newReserva.mesa_id || !newReserva.cliente_nombre || !newReserva.fecha_hora) return;
+                db.crearReserva({ mesa_id: newReserva.mesa_id, cliente_nombre: newReserva.cliente_nombre, fecha_hora: newReserva.fecha_hora, nota: newReserva.nota, estado: 'activa' });
+                refreshData(); setShowNewReserva(false);
+                setNewReserva({ mesa_id: '', cliente_nombre: '', fecha_hora: '', nota: '' });
+              }} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold">
                 Crear Reserva
               </button>
-              <button onClick={() => setShowNewReserva(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">
-                Cancelar
-              </button>
+              <button onClick={() => setShowNewReserva(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">Cancelar</button>
             </div>
           </div>
         </div>
@@ -472,19 +690,11 @@ export default function AdminView() {
             <div key={reserva.id} className="bg-slate-800 rounded-xl p-4 border border-slate-700 flex items-center justify-between">
               <div>
                 <p className="text-white font-bold">{reserva.cliente_nombre}</p>
-                <p className="text-slate-400 text-sm">
-                  Mesa {mesa?.numero_mesa} • {new Date(reserva.fecha_hora).toLocaleString()}
-                </p>
+                <p className="text-slate-400 text-sm">Mesa {mesa?.numero_mesa} • {new Date(reserva.fecha_hora).toLocaleString()}</p>
                 {reserva.nota && <p className="text-yellow-300 text-xs mt-1">📝 {reserva.nota}</p>}
               </div>
-              <button
-                onClick={() => {
-                  db.liberarReserva(reserva.id);
-                  db.emitEvent('mesa_liberada', { mesa_id: reserva.mesa_id });
-                  refreshData();
-                }}
-                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
-              >
+              <button onClick={() => { db.liberarReserva(reserva.id); db.emitEvent('mesa_liberada', { mesa_id: reserva.mesa_id }); refreshData(); }}
+                className="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
                 <Unlock className="w-4 h-4" /> Liberar Mesa
               </button>
             </div>
@@ -494,140 +704,159 @@ export default function AdminView() {
           <p className="text-slate-500 text-center py-8">No hay reservas activas</p>
         )}
       </div>
-
-      {/* Historical */}
-      {reservas.filter(r => r.estado !== 'activa').length > 0 && (
-        <div className="mt-6">
-          <h3 className="text-slate-400 font-medium mb-3">Historial</h3>
-          <div className="space-y-2">
-            {reservas.filter(r => r.estado !== 'activa').slice(-5).reverse().map(reserva => {
-              const mesa = mesas.find(m => m.id === reserva.mesa_id);
-              return (
-                <div key={reserva.id} className="bg-slate-800/50 rounded-lg px-4 py-2 flex items-center justify-between">
-                  <span className="text-slate-300 text-sm">{reserva.cliente_nombre} - Mesa {mesa?.numero_mesa}</span>
-                  <span className="text-slate-500 text-xs">{reserva.estado}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
     </div>
   );
 
-  // ============ CAJA ============
+  // ============ MEJORA D: CAJA CON CONTROL DE APERTURA ============
   const renderCaja = () => {
-    const cajas = db.getCaja();
+    // Si no hay caja abierta, mostrar modal obligatorio
+    if (!cajaTurnoActivo) {
+      return (
+        <div className="flex items-center justify-center min-h-[400px]">
+          <div className="text-center">
+            <Wallet className="w-16 h-16 text-slate-600 mx-auto mb-4" />
+            <h3 className="text-xl font-bold text-white mb-2">Caja No Disponible</h3>
+            <p className="text-slate-400">Abra la caja desde el botón inferior para comenzar</p>
+            <button
+              onClick={() => setCajaRequiereApertura(true)}
+              className="mt-4 bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-3 rounded-lg font-bold"
+            >
+              Abrir Caja
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    const turnos = db.getCajaTurnos();
+    const fechaApertura = new Date(cajaTurnoActivo.fecha_apertura).getTime();
+    const pedidosDelTurno = pedidos.filter(p =>
+      p.estado_pago === 'pagado' && new Date(p.fecha_actualizacion).getTime() >= fechaApertura
+    );
+    const totalVentasTurno = pedidosDelTurno.reduce((s, p) => s + p.total, 0);
+    const totalEfectivo = pedidosDelTurno.reduce((s, p) => s + p.pagos.reduce((ps, pg) => ps + pg.monto_efectivo, 0), 0);
+    const totalTarjeta = pedidosDelTurno.reduce((s, p) => s + p.pagos.reduce((ps, pg) => ps + pg.monto_tarjeta, 0), 0);
+    const totalTransferencia = pedidosDelTurno.reduce((s, p) => s + p.pagos.reduce((ps, pg) => ps + pg.monto_transferencia, 0), 0);
+
     return (
       <div className="space-y-6">
-        <h2 className="text-2xl font-bold text-white">Apertura / Cierre de Caja</h2>
+        <h2 className="text-2xl font-bold text-white">Gestión de Caja</h2>
 
-        {!cajaActiva ? (
-          <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
-            <h3 className="text-white font-bold mb-4">Abrir Caja</h3>
+        {/* Caja activa */}
+        <div className="bg-slate-800 rounded-xl p-6 border border-green-700">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
+            <span className="text-green-400 font-bold text-lg">Caja Abierta</span>
+            <span className="text-slate-500 text-sm ml-auto">
+              Turno #{cajaTurnoActivo.id.slice(-6)}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <p className="text-slate-400 text-sm">Apertura</p>
+              <p className="text-white font-bold">{new Date(cajaTurnoActivo.fecha_apertura).toLocaleString()}</p>
+            </div>
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <p className="text-slate-400 text-sm">Fondo Inicial</p>
+              <p className="text-white font-bold text-xl">${cajaTurnoActivo.monto_apertura.toFixed(2)}</p>
+            </div>
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <p className="text-slate-400 text-sm">Ventas del Turno</p>
+              <p className="text-green-400 font-bold text-xl">${totalVentasTurno.toFixed(2)}</p>
+            </div>
+            <div className="bg-slate-700/50 rounded-lg p-4">
+              <p className="text-slate-400 text-sm">Transacciones</p>
+              <p className="text-white font-bold text-xl">{pedidosDelTurno.length}</p>
+            </div>
+          </div>
+
+          {/* Desglose por método */}
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            <div className="bg-green-900/20 border border-green-700/30 rounded-lg p-3 text-center">
+              <p className="text-green-300 text-xs">Efectivo</p>
+              <p className="text-green-400 font-bold text-lg">${totalEfectivo.toFixed(2)}</p>
+            </div>
+            <div className="bg-blue-900/20 border border-blue-700/30 rounded-lg p-3 text-center">
+              <p className="text-blue-300 text-xs">Tarjeta</p>
+              <p className="text-blue-400 font-bold text-lg">${totalTarjeta.toFixed(2)}</p>
+            </div>
+            <div className="bg-purple-900/20 border border-purple-700/30 rounded-lg p-3 text-center">
+              <p className="text-purple-300 text-xs">Transferencia</p>
+              <p className="text-purple-400 font-bold text-lg">${totalTransferencia.toFixed(2)}</p>
+            </div>
+          </div>
+
+          {/* Cierre de caja */}
+          <div className="border-t border-slate-600 pt-4">
+            <h4 className="text-white font-medium mb-3">Cerrar Caja</h4>
             <div className="flex items-center gap-4">
               <div className="flex-1">
-                <label className="text-slate-400 text-sm block mb-1">Monto Inicial</label>
+                <label className="text-slate-400 text-sm block mb-1">Monto Final en Caja (efectivo contado)</label>
                 <input
                   type="number"
-                  value={cajaMontoInicial || ''}
-                  onChange={e => setCajaMontoInicial(Number(e.target.value))}
+                  value={cajaMontoFinal || ''}
+                  onChange={e => setCajaMontoFinal(Number(e.target.value))}
                   placeholder="0.00"
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white text-xl font-bold"
                 />
               </div>
               <button
                 onClick={() => {
-                  db.abrirCaja(user!.id, cajaMontoInicial);
-                  refreshData();
-                }}
-                className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-bold"
-              >
-                Abrir Caja
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-slate-800 rounded-xl p-6 border border-green-700">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
-              <span className="text-green-400 font-bold">Caja Abierta</span>
-            </div>
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm">Apertura</p>
-                <p className="text-white font-bold">{new Date(cajaActiva.fecha_apertura).toLocaleString()}</p>
-              </div>
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm">Monto Inicial</p>
-                <p className="text-white font-bold text-xl">${cajaActiva.monto_inicial.toFixed(2)}</p>
-              </div>
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm">Ventas del período</p>
-                <p className="text-green-400 font-bold text-xl">
-                  ${pedidos.filter(p => {
-                    return p.estado_pago === 'pagado' && new Date(p.fecha_creacion) >= new Date(cajaActiva.fecha_apertura);
-                  }).reduce((sum, p) => sum + p.total, 0).toFixed(2)}
-                </p>
-              </div>
-              <div className="bg-slate-700/50 rounded-lg p-4">
-                <p className="text-slate-400 text-sm">Transacciones</p>
-                <p className="text-white font-bold text-xl">
-                  {pedidos.filter(p => {
-                    return p.estado_pago === 'pagado' && new Date(p.fecha_creacion) >= new Date(cajaActiva.fecha_apertura);
-                  }).length}
-                </p>
-              </div>
-            </div>
-            <div className="border-t border-slate-600 pt-4">
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <label className="text-slate-400 text-sm block mb-1">Monto Final en Caja</label>
-                  <input
-                    type="number"
-                    value={cajaMontoFinal || ''}
-                    onChange={e => setCajaMontoFinal(Number(e.target.value))}
-                    placeholder="0.00"
-                    className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white text-xl font-bold"
-                  />
-                </div>
-                <button
-                  onClick={() => {
-                    db.cerrarCaja(cajaActiva.id, cajaMontoFinal);
+                  if (confirm('¿Está seguro de cerrar la caja?')) {
+                    db.cerrarCajaTurno(cajaTurnoActivo.id, cajaMontoFinal);
+                    db.emitEvent('caja_cerrada', {});
                     refreshData();
                     setCajaMontoFinal(0);
-                  }}
-                  className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-bold"
-                >
-                  Cerrar Caja
-                </button>
-              </div>
+                  }
+                }}
+                className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-bold"
+              >
+                Cerrar Caja
+              </button>
             </div>
+            {cajaMontoFinal > 0 && (
+              <div className="mt-3 bg-slate-700/30 rounded-lg p-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-400">Esperado en caja:</span>
+                  <span className="text-white font-bold">${(cajaTurnoActivo.monto_apertura + totalEfectivo).toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span className="text-slate-400">Diferencia:</span>
+                  <span className={`font-bold ${
+                    cajaMontoFinal >= (cajaTurnoActivo.monto_apertura + totalEfectivo) ? 'text-green-400' : 'text-red-400'
+                  }`}>
+                    ${(cajaMontoFinal - (cajaTurnoActivo.monto_apertura + totalEfectivo)).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
-        {/* History */}
+        {/* Historial */}
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
           <div className="px-4 py-3 bg-slate-700/50 border-b border-slate-600">
-            <h3 className="text-white font-bold">Historial de Cajas</h3>
+            <h3 className="text-white font-bold">Historial de Turnos</h3>
           </div>
           <div className="divide-y divide-slate-700">
-            {cajas.filter(c => c.fecha_cierre).slice(-5).reverse().map(caja => (
-              <div key={caja.id} className="px-4 py-3 flex items-center justify-between">
+            {turnos.filter(c => c.estado === 'cerrado').slice(-5).reverse().map(turno => (
+              <div key={turno.id} className="px-4 py-3 flex items-center justify-between">
                 <div>
-                  <p className="text-white text-sm">{new Date(caja.fecha_apertura).toLocaleDateString()}</p>
+                  <p className="text-white text-sm">{new Date(turno.fecha_apertura).toLocaleDateString()}</p>
                   <p className="text-slate-400 text-xs">
-                    {new Date(caja.fecha_apertura).toLocaleTimeString()} - {caja.fecha_cierre ? new Date(caja.fecha_cierre).toLocaleTimeString() : ''}
+                    {new Date(turno.fecha_apertura).toLocaleTimeString()} - {turno.fecha_cierre ? new Date(turno.fecha_cierre).toLocaleTimeString() : ''}
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-white font-bold">Inicial: ${caja.monto_inicial.toFixed(2)}</p>
-                  <p className="text-green-400 text-sm">Final: ${caja.monto_final?.toFixed(2)}</p>
+                  <p className="text-white font-bold">Apertura: ${turno.monto_apertura.toFixed(2)}</p>
+                  <p className="text-green-400 text-sm">Ventas: ${turno.total_ventas.toFixed(2)}</p>
+                  <p className="text-slate-400 text-xs">Cierre: ${turno.monto_cierre?.toFixed(2)}</p>
                 </div>
               </div>
             ))}
-            {cajas.filter(c => c.fecha_cierre).length === 0 && (
-              <p className="text-slate-500 text-center py-4">Sin historial</p>
+            {turnos.filter(c => c.estado === 'cerrado').length === 0 && (
+              <p className="text-slate-500 text-center py-4">Sin historial de turnos cerrados</p>
             )}
           </div>
         </div>
@@ -642,75 +871,38 @@ export default function AdminView() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-bold text-white">Usuarios</h2>
-          <button
-            onClick={() => setShowNewUsuario(true)}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2"
-          >
+          <button onClick={() => setShowNewUsuario(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2">
             <Plus className="w-4 h-4" /> Nuevo Usuario
           </button>
         </div>
-
         {showNewUsuario && (
           <div className="bg-slate-800 rounded-xl p-5 border border-slate-700">
             <h3 className="text-white font-bold mb-4">Nuevo Usuario</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <input
-                type="text"
-                value={newUsuario.nombre}
-                onChange={e => setNewUsuario({ ...newUsuario, nombre: e.target.value })}
-                placeholder="Nombre completo"
-                className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400"
-              />
-              <input
-                type="text"
-                value={newUsuario.usuario}
-                onChange={e => setNewUsuario({ ...newUsuario, usuario: e.target.value })}
-                placeholder="Usuario"
-                className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400"
-              />
-              <input
-                type="password"
-                value={newUsuario.password}
-                onChange={e => setNewUsuario({ ...newUsuario, password: e.target.value })}
-                placeholder="Contraseña"
-                className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400"
-              />
-              <select
-                value={newUsuario.rol}
-                onChange={e => setNewUsuario({ ...newUsuario, rol: e.target.value as any })}
-                className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white"
-              >
+              <input type="text" value={newUsuario.nombre} onChange={e => setNewUsuario({ ...newUsuario, nombre: e.target.value })}
+                placeholder="Nombre completo" className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400" />
+              <input type="text" value={newUsuario.usuario} onChange={e => setNewUsuario({ ...newUsuario, usuario: e.target.value })}
+                placeholder="Usuario" className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400" />
+              <input type="password" value={newUsuario.password} onChange={e => setNewUsuario({ ...newUsuario, password: e.target.value })}
+                placeholder="Contraseña" className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400" />
+              <select value={newUsuario.rol} onChange={e => setNewUsuario({ ...newUsuario, rol: e.target.value as any })}
+                className="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white">
                 <option value="mesero">Mesero</option>
                 <option value="cocina">Cocina</option>
                 <option value="admin">Administrador</option>
               </select>
               <div className="flex gap-2 sm:col-span-2">
-                <button
-                  onClick={() => {
-                    if (!newUsuario.nombre || !newUsuario.usuario || !newUsuario.password) return;
-                    db.addUsuario({
-                      nombre: newUsuario.nombre,
-                      usuario: newUsuario.usuario,
-                      password: newUsuario.password,
-                      rol: newUsuario.rol,
-                      activo: true,
-                    });
-                    refreshData();
-                    setShowNewUsuario(false);
-                    setNewUsuario({ nombre: '', usuario: '', password: '', rol: 'mesero' });
-                  }}
-                  className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold"
-                >
-                  Crear
-                </button>
-                <button onClick={() => setShowNewUsuario(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">
-                  Cancelar
-                </button>
+                <button onClick={() => {
+                  if (!newUsuario.nombre || !newUsuario.usuario || !newUsuario.password) return;
+                  db.addUsuario({ nombre: newUsuario.nombre, usuario: newUsuario.usuario, password: newUsuario.password, rol: newUsuario.rol, activo: true });
+                  refreshData(); setShowNewUsuario(false);
+                  setNewUsuario({ nombre: '', usuario: '', password: '', rol: 'mesero' });
+                }} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold">Crear</button>
+                <button onClick={() => setShowNewUsuario(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">Cancelar</button>
               </div>
             </div>
           </div>
         )}
-
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
           <table className="w-full">
             <thead className="bg-slate-700/50">
@@ -729,12 +921,8 @@ export default function AdminView() {
                   <td className="px-4 py-3 text-slate-300 text-sm">{u.usuario}</td>
                   <td className="px-4 py-3">
                     <span className={`text-xs px-2 py-1 rounded-full ${
-                      u.rol === 'admin' ? 'bg-red-500/20 text-red-300' :
-                      u.rol === 'mesero' ? 'bg-blue-500/20 text-blue-300' :
-                      'bg-orange-500/20 text-orange-300'
-                    }`}>
-                      {u.rol}
-                    </span>
+                      u.rol === 'admin' ? 'bg-red-500/20 text-red-300' : u.rol === 'mesero' ? 'bg-blue-500/20 text-blue-300' : 'bg-orange-500/20 text-orange-300'
+                    }`}>{u.rol}</span>
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className={`text-xs px-2 py-1 rounded-full ${u.activo ? 'bg-green-500/20 text-green-300' : 'bg-red-500/20 text-red-300'}`}>
@@ -742,12 +930,10 @@ export default function AdminView() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <button
-                      onClick={() => { db.toggleUsuarioActivo(u.id); refreshData(); }}
+                    <button onClick={() => { db.toggleUsuarioActivo(u.id); refreshData(); }}
                       className={`text-xs px-3 py-1 rounded-lg font-medium ${
                         u.activo ? 'bg-red-600/20 text-red-300 hover:bg-red-600/40' : 'bg-green-600/20 text-green-300 hover:bg-green-600/40'
-                      }`}
-                    >
+                      }`}>
                       {u.activo ? 'Desactivar' : 'Activar'}
                     </button>
                   </td>
@@ -786,32 +972,39 @@ export default function AdminView() {
             >
               <t.icon className="w-5 h-5" />
               {t.label}
+              {t.id === 'ordenes' && pedidos.filter(p => p.estado_pago === 'pendiente' && new Date(p.fecha_creacion).toDateString() === new Date().toDateString()).length > 0 && (
+                <span className="ml-auto bg-red-500 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">
+                  {pedidos.filter(p => p.estado_pago === 'pendiente' && new Date(p.fecha_creacion).toDateString() === new Date().toDateString()).length}
+                </span>
+              )}
             </button>
           ))}
         </nav>
         <div className="p-3 border-t border-slate-700">
-          <button
-            onClick={logout}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-red-400 hover:bg-red-900/20"
-          >
+          <button onClick={logout} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-red-400 hover:bg-red-900/20">
             <LogOut className="w-5 h-5" /> Cerrar Sesión
           </button>
         </div>
       </aside>
 
       {/* Mobile nav */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-700 z-50">
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-slate-800 border-t border-slate-700 z-40">
         <div className="flex overflow-x-auto">
           {tabs.map(t => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex-1 min-w-[60px] flex flex-col items-center gap-1 px-2 py-2 text-xs ${
+              className={`flex-1 min-w-[60px] flex flex-col items-center gap-1 px-2 py-2 text-xs relative ${
                 tab === t.id ? 'text-orange-400' : 'text-slate-400'
               }`}
             >
               <t.icon className="w-5 h-5" />
               <span className="truncate">{t.label}</span>
+              {t.id === 'ordenes' && pedidos.filter(p => p.estado_pago === 'pendiente' && new Date(p.fecha_creacion).toDateString() === new Date().toDateString()).length > 0 && (
+                <span className="absolute top-1 right-1 bg-red-500 text-white text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full">
+                  {pedidos.filter(p => p.estado_pago === 'pendiente' && new Date(p.fecha_creacion).toDateString() === new Date().toDateString()).length}
+                </span>
+              )}
             </button>
           ))}
           <button onClick={logout} className="flex-1 min-w-[60px] flex flex-col items-center gap-1 px-2 py-2 text-xs text-red-400">
@@ -825,12 +1018,48 @@ export default function AdminView() {
       <main className="flex-1 overflow-y-auto p-6 pb-24 lg:pb-6">
         {tab === 'dashboard' && renderDashboard()}
         {tab === 'mesas' && renderMesas()}
+        {tab === 'ordenes' && renderOrdenes()}
         {tab === 'menu' && renderMenu()}
         {tab === 'inventario' && renderInventario()}
         {tab === 'reservas' && renderReservas()}
         {tab === 'caja' && renderCaja()}
         {tab === 'usuarios' && renderUsuarios()}
       </main>
+
+      {/* MEJORA D: Modal obligatorio de apertura de caja */}
+      {cajaRequiereApertura && !cajaTurnoActivo && (
+        <CashRegisterOpenModal
+          usuarioId={user!.id}
+          onOpened={() => {
+            setCajaRequiereApertura(false);
+            refreshData();
+          }}
+        />
+      )}
+
+      {/* Modal de resumen de pedido */}
+      {summaryPedido && (
+        <OrderSummaryModal
+          pedido={summaryPedido}
+          onClose={() => setSummaryPedido(null)}
+          onPay={() => {
+            setSummaryPedido(null);
+            setPaymentPedido(summaryPedido);
+          }}
+        />
+      )}
+
+      {/* Modal de pago */}
+      {paymentPedido && (
+        <PaymentModal
+          pedido={paymentPedido}
+          onClose={() => setPaymentPedido(null)}
+          onSuccess={() => {
+            setPaymentPedido(null);
+            refreshData();
+          }}
+        />
+      )}
     </div>
   );
 }

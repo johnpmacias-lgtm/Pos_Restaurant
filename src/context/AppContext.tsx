@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
-import { Usuario, Pedido, Mesa, Producto, Inventario, Reserva } from '../types';
+import { Usuario, Pedido, Mesa, Producto, Inventario, Reserva, CajaTurno } from '../types';
 import * as db from '../db/database';
 
 interface AppContextType {
@@ -9,6 +9,7 @@ interface AppContextType {
   productos: Producto[];
   inventario: Inventario[];
   reservas: Reserva[];
+  cajaTurnoActivo: CajaTurno | null;
   login: (usuario: string, password: string) => boolean;
   logout: () => void;
   refreshData: () => void;
@@ -25,6 +26,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [productos, setProductos] = useState<Producto[]>([]);
   const [inventario, setInventario] = useState<Inventario[]>([]);
   const [reservas, setReservas] = useState<Reserva[]>([]);
+  const [cajaTurnoActivo, setCajaTurnoActivo] = useState<CajaTurno | null>(null);
 
   const refreshData = useCallback(() => {
     setPedidos(db.getPedidos());
@@ -32,6 +34,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setProductos(db.getProductos());
     setInventario(db.getInventario());
     setReservas(db.getReservas());
+    setCajaTurnoActivo(db.getCajaTurnoActivo());
   }, []);
 
   const refreshPedidos = useCallback(() => {
@@ -72,7 +75,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <AppContext.Provider value={{
-      user, pedidos, mesas, productos, inventario, reservas,
+      user, pedidos, mesas, productos, inventario, reservas, cajaTurnoActivo,
       login: handleLogin, logout: handleLogout,
       refreshData, refreshPedidos, refreshMesas
     }}>
