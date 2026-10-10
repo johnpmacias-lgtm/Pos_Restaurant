@@ -177,6 +177,21 @@ db.exec(`
     FOREIGN KEY (mesa_id) REFERENCES mesas(id) ON DELETE CASCADE
   );
 
+  -- Tabla de configuración global (Singleton - una sola fila)
+  CREATE TABLE IF NOT EXISTS configuracion_global (
+    id INTEGER PRIMARY KEY CHECK (id = 1), -- Singleton: solo puede haber id=1
+    nombre_negocio TEXT NOT NULL DEFAULT 'Mi Restaurante',
+    ruc TEXT DEFAULT '',
+    direccion TEXT DEFAULT '',
+    telefono TEXT DEFAULT '',
+    logo_url TEXT DEFAULT '',
+    iva_porcentaje REAL NOT NULL DEFAULT 15.0,
+    propina_porcentaje REAL NOT NULL DEFAULT 10.0,
+    mensaje_ticket TEXT DEFAULT '¡Gracias por su preferencia!',
+    papel_impresora TEXT NOT NULL DEFAULT '80mm' CHECK (papel_impresora IN ('58mm', '80mm')),
+    actualizado_en TEXT DEFAULT (datetime('now'))
+  );
+
   -- ============================================
   -- ÍNDICES PARA OPTIMIZACIÓN
   -- ============================================
@@ -320,6 +335,17 @@ function seedDatabase() {
       );
     }
 
+    // Configuración Global (Singleton)
+    db.prepare(`
+      INSERT INTO configuracion_global (
+        id, nombre_negocio, ruc, direccion, telefono, 
+        iva_porcentaje, propina_porcentaje, mensaje_ticket, papel_impresora
+      ) VALUES (
+        1, 'Mi Restaurante', '00000000', 'Dirección del negocio', '000-000-000',
+        15.0, 10.0, '¡Gracias por su preferencia!', '80mm'
+      )
+    `).run();
+
     console.log('✅ Datos semilla insertados correctamente');
   });
 
@@ -335,6 +361,21 @@ if (process.argv.includes('--seed')) {
   if (count.count === 0) {
     console.log('🌱 Base de datos vacía, ejecutando seed inicial...');
     seedDatabase();
+  }
+  
+  // Verificar si la configuración global existe
+  const configCount = db.prepare('SELECT COUNT(*) as count FROM configuracion_global').get();
+  if (configCount.count === 0) {
+    console.log('🌱 Creando configuración global por defecto...');
+    db.prepare(`
+      INSERT INTO configuracion_global (
+        id, nombre_negocio, ruc, direccion, telefono, 
+        iva_porcentaje, propina_porcentaje, mensaje_ticket, papel_impresora
+      ) VALUES (
+        1, 'Mi Restaurante', '00000000', 'Dirección del negocio', '000-000-000',
+        15.0, 10.0, '¡Gracias por su preferencia!', '80mm'
+      )
+    `).run();
   }
 }
 

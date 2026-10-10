@@ -19,6 +19,8 @@ const path = require('path');
 // Importar controladores
 const cobroController = require('./controllers/cobroController');
 const cajaController = require('./controllers/cajaController');
+const configuracionController = require('./controllers/configuracionController');
+const reportesController = require('./controllers/reportesController');
 
 // ============================================
 // CONFIGURACIÓN INICIAL
@@ -133,6 +135,54 @@ app.get('/api/caja/turno-activo', (req, res) => {
  */
 app.get('/api/caja/historial', (req, res) => {
   cajaController.obtenerHistorialTurnos(req, res);
+});
+
+// --------------------------------------------
+// RUTAS DE CONFIGURACIÓN
+// --------------------------------------------
+
+/**
+ * GET /api/configuracion
+ * Obtener configuración global
+ */
+app.get('/api/configuracion', (req, res) => {
+  configuracionController.obtenerConfiguracion(req, res);
+});
+
+/**
+ * PUT /api/configuracion
+ * Actualizar configuración global
+ */
+app.put('/api/configuracion', (req, res) => {
+  configuracionController.actualizarConfiguracion(req, res);
+});
+
+/**
+ * GET /api/backup
+ * Descargar backup de la base de datos
+ */
+app.get('/api/backup', (req, res) => {
+  configuracionController.descargarBackup(req, res);
+});
+
+// --------------------------------------------
+// RUTAS DE REPORTES
+// --------------------------------------------
+
+/**
+ * GET /api/reportes/diario
+ * Reporte Diario (Reporte Z)
+ */
+app.get('/api/reportes/diario', (req, res) => {
+  reportesController.reporteDiario(req, res);
+});
+
+/**
+ * GET /api/reportes/rango
+ * Reporte de un rango de fechas
+ */
+app.get('/api/reportes/rango', (req, res) => {
+  reportesController.reporteRango(req, res);
 });
 
 // --------------------------------------------
