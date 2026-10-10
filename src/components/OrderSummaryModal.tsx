@@ -7,9 +7,10 @@ interface OrderSummaryModalProps {
   pedido: Pedido;
   onClose: () => void;
   onPay: () => void;
+  onMarkDelivered?: () => void;
 }
 
-export default function OrderSummaryModal({ pedido, onClose, onPay }: OrderSummaryModalProps) {
+export default function OrderSummaryModal({ pedido, onClose, onPay, onMarkDelivered }: OrderSummaryModalProps) {
   const productos = db.getProductos();
   const mesas = db.getMesas();
   const mesa = mesas.find(m => m.id === pedido.mesa_id);
@@ -136,6 +137,17 @@ export default function OrderSummaryModal({ pedido, onClose, onPay }: OrderSumma
             >
               <CreditCard className="w-6 h-6" />
               Cobrar ${pedido.total.toFixed(2)}
+            </button>
+          )}
+
+          {/* MEJORA A: Botón Marcar como Entregado */}
+          {pedido.estado_cocina !== 'entregado' && onMarkDelivered && (
+            <button
+              onClick={onMarkDelivered}
+              className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2"
+            >
+              <CheckCircle className="w-5 h-5" />
+              Marcar como Entregado
             </button>
           )}
 

@@ -253,6 +253,20 @@ export default function WaiterView() {
                         <p className="text-orange-300 text-xs mt-1">👆 Click para cobrar</p>
                       )}
                     </div>
+                    {/* MEJORA A: Botón Marcar como Entregado */}
+                    {pedidoMesa.estado_cocina === 'listo' && mesa.estado === 'ocupada' && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          db.updateEstadoCocina(pedidoMesa.id, 'entregado');
+                          db.emitEvent('estado_cocina_actualizado', { pedidoId: pedidoMesa.id, estado: 'entregado' });
+                          refreshData();
+                        }}
+                        className="mt-2 w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg flex items-center justify-center gap-1"
+                      >
+                        <CheckCircle className="w-3 h-3" /> Marcar Entregado
+                      </button>
+                    )}
                   </>
                 )}
               </button>
@@ -377,9 +391,9 @@ export default function WaiterView() {
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="flex gap-2 p-3 overflow-x-auto bg-slate-800/30 border-b border-slate-700">
             {categorias.filter(c => c !== 'Desechables').map(cat => (
-              <button key={cat} onClick={() => setCategoria(cat)}
+              <button key={cat} onClick={() => { setCategoria(cat); setShowDesechables(false); }}
                 className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-                  categoria === cat ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  categoria === cat && !showDesechables ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                 }`}>{cat}</button>
             ))}
             <button onClick={() => setShowDesechables(!showDesechables)}

@@ -44,6 +44,10 @@ export interface Producto {
 export interface Inventario {
   id: string;
   producto_id: string;
+  nombre: string;
+  descripcion: string;
+  categoria: string;
+  unidad_medida: string;
   stock_actual: number;
   stock_minimo: number;
   precio_costo: number;

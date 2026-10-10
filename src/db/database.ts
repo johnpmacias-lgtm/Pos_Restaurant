@@ -99,9 +99,22 @@ export function initializeDatabase(): void {
   setCollection(DB_KEYS.productos, productos);
 
   // Inventario
+  const getUnidadMedida = (cat: string) => {
+    switch (cat) {
+      case 'Bebidas': return 'Litros';
+      case 'Platos': return 'Porciones';
+      case 'Postres': return 'Porciones';
+      case 'Desechables': return 'Unidades';
+      default: return 'Unidades';
+    }
+  };
   const inventario: Inventario[] = productos.map(p => ({
     id: uuidv4(),
     producto_id: p.id,
+    nombre: p.nombre,
+    descripcion: `Insumo: ${p.nombre}`,
+    categoria: p.categoria,
+    unidad_medida: getUnidadMedida(p.categoria),
     stock_actual: p.es_desechable ? 200 : 50,
     stock_minimo: p.es_desechable ? 50 : 10,
     precio_costo: Math.round(p.precio_base * 0.4),
