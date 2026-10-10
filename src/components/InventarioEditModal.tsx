@@ -13,7 +13,7 @@ export default function InventarioEditModal({ insumo, onClose, onSave }: Inventa
   const [formData, setFormData] = useState({
     nombre: insumo.nombre,
     descripcion: insumo.descripcion,
-    categoria: insumo.categoria,
+    categoria_inventario: insumo.categoria_inventario,
     unidad_medida: insumo.unidad_medida,
     stock_actual: insumo.stock_actual,
     stock_minimo: insumo.stock_minimo,
@@ -22,7 +22,7 @@ export default function InventarioEditModal({ insumo, onClose, onSave }: Inventa
   });
 
   const handleSave = () => {
-    if (!formData.nombre || !formData.categoria) {
+    if (!formData.nombre || !formData.categoria_inventario) {
       alert('Nombre y Categoría son obligatorios');
       return;
     }
@@ -37,7 +37,8 @@ export default function InventarioEditModal({ insumo, onClose, onSave }: Inventa
     const prodIdx = productos.findIndex(p => p.id === insumo.producto_id);
     if (prodIdx >= 0) {
       productos[prodIdx].nombre = formData.nombre;
-      productos[prodIdx].categoria = formData.categoria;
+      // NO actualizar la categoría del producto desde el inventario
+      // Las categorías están separadas
       productos[prodIdx].precio_base = formData.precio_venta;
       localStorage.setItem('pos_productos', JSON.stringify(productos));
     }
@@ -81,8 +82,8 @@ export default function InventarioEditModal({ insumo, onClose, onSave }: Inventa
             <div>
               <label className="text-slate-400 text-xs block mb-1">Categoría *</label>
               <select
-                value={formData.categoria}
-                onChange={e => setFormData({ ...formData, categoria: e.target.value })}
+                value={formData.categoria_inventario}
+                onChange={e => setFormData({ ...formData, categoria_inventario: e.target.value })}
                 className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="Carnes y aves">Carnes y aves</option>

@@ -41,8 +41,40 @@ export function verifyPassword(password: string, hash: string): boolean {
   return simpleHash(password) === hash;
 }
 
+// ============ MIGRATION ============
+function migrateInventario(): void {
+  const raw = localStorage.getItem('pos_inventario');
+  if (!raw) return;
+  const items: any[] = JSON.parse(raw);
+  let needsSave = false;
+  const migrated = items.map(item => {
+    if (item.categoria !== undefined && item.categoria_inventario === undefined) {
+      needsSave = true;
+      // Mapear categorías del menú a categorías de inventario
+      let catInv = 'Abarrotes y secos';
+      switch (item.categoria) {
+        case 'Platos': catInv = 'Carnes y aves'; break;
+        case 'Bebidas': catInv = 'Bebidas e insumos líquidos'; break;
+        case 'Postres': catInv = 'Lácteos y huevos'; break;
+        case 'Desechables': catInv = 'Descartables y suministros'; break;
+        default:
+          if (['Carnes y aves', 'Pescados y mariscos', 'Frutas y verduras', 'Lácteos y huevos', 'Abarrotes y secos', 'Aceites, salsas y condimentos', 'Bebidas e insumos líquidos', 'Congelados', 'Descartables y suministros'].includes(item.categoria)) {
+            catInv = item.categoria;
+          }
+      }
+      return { ...item, categoria_inventario: catInv };
+    }
+    return item;
+  });
+  if (needsSave) {
+    localStorage.setItem('pos_inventario', JSON.stringify(migrated));
+  }
+}
+
 // ============ INITIALIZATION ============
 export function initializeDatabase(): void {
+  // Ejecutar migración antes de verificar inicialización
+  migrateInventario();
   if (localStorage.getItem('pos_initialized')) return;
 
   // Usuarios
@@ -99,12 +131,26 @@ export function initializeDatabase(): void {
   setCollection(DB_KEYS.productos, productos);
 
   // Inventario
-  const getUnidadMedida = (cat: string) => {
-    switch (cat) {
-      case 'Bebidas': return 'Litros';
-      case 'Platos': return 'Porciones';
-      case 'Postres': return 'Porciones';
-      case 'Desechables': return 'Unidades';
+  const getCategoriaInventario = (catMenu: string, esDesechable: boolean): string => {
+    if (esDesechable) return 'Descartables y suministros';
+    switch (catMenu) {
+      case 'Bebidas': return 'Bebidas e insumos líquidos';
+      case 'Platos': return 'Carnes y aves'; // Default para platos
+      case 'Postres': return 'Lácteos y huevos'; // Default para postres
+      default: return 'Abarrotes y secos';
+    }
+  };
+  const getUnidadMedida = (catInv: string) => {
+    switch (catInv) {
+      case 'Bebidas e insumos líquidos': return 'Litros';
+      case 'Carnes y aves':
+      case 'Pescados y mariscos': return 'Kg';
+      case 'Frutas y verduras': return 'Kg';
+      case 'Lácteos y huevos': return 'Unidades';
+      case 'Abarrotes y secos': return 'Kg';
+      case 'Aceites, salsas y condimentos': return 'Litros';
+      case 'Congelados': return 'Kg';
+      case 'Descartables y suministros': return 'Unidades';
       default: return 'Unidades';
     }
   };
@@ -113,8 +159,8 @@ export function initializeDatabase(): void {
     producto_id: p.id,
     nombre: p.nombre,
     descripcion: `Insumo: ${p.nombre}`,
-    categoria: p.categoria,
-    unidad_medida: getUnidadMedida(p.categoria),
+    categoria_inventario: getCategoriaInventario(p.categoria, p.es_desechable),
+    unidad_medida: getUnidadMedida(getCategoriaInventario(p.categoria, p.es_desechable)),
     stock_actual: p.es_desechable ? 200 : 50,
     stock_minimo: p.es_desechable ? 50 : 10,
     precio_costo: Math.round(p.precio_base * 0.4),

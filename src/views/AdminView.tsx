@@ -39,7 +39,7 @@ export default function AdminView() {
   const [newProd, setNewProd] = useState({ nombre: '', precio_base: 0, categoria: 'Platos', es_desechable: false });
   const [newReserva, setNewReserva] = useState({ mesa_id: '', cliente_nombre: '', fecha_hora: '', nota: '' });
   const [newUsuario, setNewUsuario] = useState({ nombre: '', usuario: '', password: '', rol: 'mesero' as const });
-  const [newInsumo, setNewInsumo] = useState({ nombre: '', descripcion: '', categoria: 'Platos', unidad_medida: 'Unidades', stock_actual: 0, stock_minimo: 0, precio_costo: 0, precio_venta: 0 });
+  const [newInsumo, setNewInsumo] = useState({ nombre: '', descripcion: '', categoria_inventario: 'Carnes y aves', unidad_medida: 'Unidades', stock_actual: 0, stock_minimo: 0, precio_costo: 0, precio_venta: 0 });
   const [cajaMontoInicial, setCajaMontoInicial] = useState(0);
   const [cajaMontoFinal, setCajaMontoFinal] = useState(0);
 
@@ -58,9 +58,9 @@ export default function AdminView() {
     : productos.filter(p => p.categoria === menuFilter);
 
   // Inventario filtrado
-  const categoriasInventario = ['Todos', ...Array.from(new Set(inventario.map(i => i.categoria)))];
+  const categoriasInventario = ['Todos', ...Array.from(new Set(inventario.map(i => i.categoria_inventario)))];
   const inventarioFiltrado = inventario.filter(i => {
-    const matchCategoria = inventarioFilter === 'Todos' || i.categoria === inventarioFilter;
+    const matchCategoria = inventarioFilter === 'Todos' || i.categoria_inventario === inventarioFilter;
     const matchSearch = inventarioSearch === '' || 
       i.nombre.toLowerCase().includes(inventarioSearch.toLowerCase()) ||
       i.descripcion.toLowerCase().includes(inventarioSearch.toLowerCase());
@@ -558,12 +558,33 @@ export default function AdminView() {
                   es_desechable: newProd.es_desechable, disponible: true, envase_predeterminado_id: null, categoria: newProd.categoria,
                 };
                 db.addProducto(prod);
-                const getUnidadMedida = (cat: string) => {
-                  switch (cat) { case 'Bebidas': return 'Litros'; case 'Platos': case 'Postres': return 'Porciones'; default: return 'Unidades'; }
+                const getCategoriaInventario = (catMenu: string, esDesechable: boolean): string => {
+                  if (esDesechable) return 'Descartables y suministros';
+                  switch (catMenu) {
+                    case 'Bebidas': return 'Bebidas e insumos líquidos';
+                    case 'Platos': return 'Carnes y aves';
+                    case 'Postres': return 'Lácteos y huevos';
+                    default: return 'Abarrotes y secos';
+                  }
                 };
+                const getUnidadMedida = (catInv: string) => {
+                  switch (catInv) {
+                    case 'Bebidas e insumos líquidos': return 'Litros';
+                    case 'Carnes y aves':
+                    case 'Pescados y mariscos':
+                    case 'Frutas y verduras':
+                    case 'Abarrotes y secos':
+                    case 'Congelados': return 'Kg';
+                    case 'Lácteos y huevos':
+                    case 'Descartables y suministros': return 'Unidades';
+                    case 'Aceites, salsas y condimentos': return 'Litros';
+                    default: return 'Unidades';
+                  }
+                };
+                const catInv = getCategoriaInventario(prod.categoria, prod.es_desechable);
                 const inv: Inventario = {
                   id: uuidv4(), producto_id: prod.id, nombre: prod.nombre, descripcion: `Insumo: ${prod.nombre}`,
-                  categoria: prod.categoria, unidad_medida: getUnidadMedida(prod.categoria),
+                  categoria_inventario: catInv, unidad_medida: getUnidadMedida(catInv),
                   stock_actual: newProd.es_desechable ? 200 : 50, stock_minimo: newProd.es_desechable ? 50 : 10,
                   precio_costo: Math.round(newProd.precio_base * 0.4), precio_venta: newProd.precio_base,
                 };
@@ -686,7 +707,7 @@ export default function AdminView() {
             </div>
             <div>
               <label className="text-slate-400 text-xs block mb-1">Categoría *</label>
-              <select value={newInsumo.categoria} onChange={e => setNewInsumo({ ...newInsumo, categoria: e.target.value })}
+              <select value={newInsumo.categoria_inventario} onChange={e => setNewInsumo({ ...newInsumo, categoria_inventario: e.target.value })}
                 className="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white">
                 <option value="Carnes y aves">Carnes y aves</option>
                 <option value="Pescados y mariscos">Pescados y mariscos</option>
@@ -732,19 +753,29 @@ export default function AdminView() {
             </div>
             <div className="flex gap-2 sm:col-span-2">
               <button onClick={() => {
-                if (!newInsumo.nombre || !newInsumo.categoria) return;
+                if (!newInsumo.nombre || !newInsumo.categoria_inventario) return;
                 const prodId = uuidv4();
+                // Mapear categoría de inventario a categoría de menú
+                const getCategoriaMenu = (catInv: string): string => {
+                  switch (catInv) {
+                    case 'Bebidas e insumos líquidos': return 'Bebidas';
+                    case 'Descartables y suministros': return 'Desechables';
+                    case 'Lácteos y huevos': return 'Postres';
+                    default: return 'Platos';
+                  }
+                };
+                const catMenu = getCategoriaMenu(newInsumo.categoria_inventario);
                 // Crear producto
                 const prod: Producto = {
                   id: prodId, nombre: newInsumo.nombre, precio_base: newInsumo.precio_venta,
-                  es_desechable: newInsumo.categoria === 'Desechables', disponible: true,
-                  envase_predeterminado_id: null, categoria: newInsumo.categoria,
+                  es_desechable: newInsumo.categoria_inventario === 'Descartables y suministros', disponible: true,
+                  envase_predeterminado_id: null, categoria: catMenu,
                 };
                 db.addProducto(prod);
                 // Crear inventario
                 const inv: Inventario = {
                   id: uuidv4(), producto_id: prodId, nombre: newInsumo.nombre,
-                  descripcion: newInsumo.descripcion, categoria: newInsumo.categoria,
+                  descripcion: newInsumo.descripcion, categoria_inventario: newInsumo.categoria_inventario,
                   unidad_medida: newInsumo.unidad_medida, stock_actual: newInsumo.stock_actual,
                   stock_minimo: newInsumo.stock_minimo, precio_costo: newInsumo.precio_costo,
                   precio_venta: newInsumo.precio_venta,
@@ -754,7 +785,7 @@ export default function AdminView() {
                 localStorage.setItem('pos_inventario', JSON.stringify(invItems));
                 refreshData();
                 setShowNewInsumo(false);
-                setNewInsumo({ nombre: '', descripcion: '', categoria: 'Platos', unidad_medida: 'Unidades', stock_actual: 0, stock_minimo: 0, precio_costo: 0, precio_venta: 0 });
+                setNewInsumo({ nombre: '', descripcion: '', categoria_inventario: 'Carnes y aves', unidad_medida: 'Unidades', stock_actual: 0, stock_minimo: 0, precio_costo: 0, precio_venta: 0 });
               }} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-bold">Crear Insumo</button>
               <button onClick={() => setShowNewInsumo(false)} className="bg-slate-600 hover:bg-slate-500 text-white px-4 py-2 rounded-lg text-sm">Cancelar</button>
             </div>
@@ -791,7 +822,7 @@ export default function AdminView() {
                         </div>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded-full">{inv.categoria}</span>
+                        <span className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded-full">{inv.categoria_inventario}</span>
                       </td>
                       <td className="px-4 py-3 text-slate-300 text-sm">{inv.unidad_medida}</td>
                       <td className={`px-4 py-3 text-right font-bold ${isLow ? 'text-red-400' : 'text-white'}`}>
