@@ -1,0 +1,27 @@
+{
+  "name": "pos-kds-backend",
+  "version": "2.0.0",
+  "description": "Backend local para Sistema POS/KDS de Restaurante - On-Premise con Autenticación JWT",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "seed": "node database.js --seed",
+    "migrate-passwords": "node migratePasswords.js"
+  },
+  "keywords": ["pos", "kds", "restaurante", "sqlite", "websocket"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "better-sqlite3": "^9.4.3",
+    "socket.io": "^4.6.1",
+    "uuid": "^9.0.1",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
