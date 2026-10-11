@@ -960,7 +960,11 @@ export default function AdminView() {
       );
     }
     const turnos = db.getCajaTurnos();
-    const fechaApertura = new Date(cajaTurnoActivo.fecha_apertura).getTime();
+    // "Optional chaining" defensivo: si algún campo llega null/undefined,
+    // se usa el timestamp actual en lugar de colapsar la pantalla.
+    const fechaApertura = cajaTurnoActivo.fecha_apertura
+      ? new Date(cajaTurnoActivo.fecha_apertura).getTime()
+      : Date.now();
     const pedidosDelTurno = pedidos.filter(p => p.estado_pago === 'pagado' && new Date(p.fecha_actualizacion).getTime() >= fechaApertura);
     const totalVentasTurno = pedidosDelTurno.reduce((s, p) => s + p.total, 0);
     const totalEfectivo = pedidosDelTurno.reduce((s, p) => s + p.pagos.reduce((ps, pg) => ps + pg.monto_efectivo, 0), 0);
@@ -974,7 +978,8 @@ export default function AdminView() {
           <div className="flex items-center gap-3 mb-6">
             <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
             <span className="text-green-400 font-bold text-lg">Caja Abierta</span>
-            <span className="text-slate-500 text-sm ml-auto">Turno #{cajaTurnoActivo.id.slice(-6)}</span>
+            {/* Optional chaining: `id` puede venir null desde el backend */}
+            <span className="text-slate-500 text-sm ml-auto">Turno #{cajaTurnoActivo?.id?.slice(-6) ?? 'N/D'}</span>
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <div className="bg-slate-700/50 rounded-lg p-4">
@@ -983,7 +988,7 @@ export default function AdminView() {
             </div>
             <div className="bg-slate-700/50 rounded-lg p-4">
               <p className="text-slate-400 text-sm">Fondo Inicial</p>
-              <p className="text-white font-bold text-xl">${cajaTurnoActivo.monto_apertura.toFixed(2)}</p>
+              <p className="text-white font-bold text-xl">${Number(cajaTurnoActivo?.monto_apertura ?? 0).toFixed(2)}</p>
             </div>
             <div className="bg-slate-700/50 rounded-lg p-4">
               <p className="text-slate-400 text-sm">Ventas del Turno</p>
@@ -1018,6 +1023,11 @@ export default function AdminView() {
               </div>
               <button onClick={() => {
                 if (confirm('¿Está seguro de cerrar la caja?')) {
+                  // No intentar cerrar con `id` null: colapsaría la pantalla
+                  if (!cajaTurnoActivo?.id) {
+                    alert('No hay un turno de caja válido para cerrar.');
+                    return;
+                  }
                   db.cerrarCajaTurno(cajaTurnoActivo.id, cajaMontoFinal);
                   db.emitEvent('caja_cerrada', {});
                   refreshData();
@@ -1032,15 +1042,15 @@ export default function AdminView() {
             <h3 className="text-white font-bold">Historial de Turnos</h3>
           </div>
           <div className="divide-y divide-slate-700">
-            {turnos.filter(c => c.estado === 'cerrado').slice(-5).reverse().map(turno => (
-              <div key={turno.id} className="px-4 py-3 flex items-center justify-between">
+            {turnos.filter(c => c.estado === 'cerrado').slice(-5).reverse().map((turno, i) => (
+              <div key={turno?.id ?? `turno-cerrado-${i}`} className="px-4 py-3 flex items-center justify-between">
                 <div>
-                  <p className="text-white text-sm">{new Date(turno.fecha_apertura).toLocaleDateString()}</p>
-                  <p className="text-slate-400 text-xs">{new Date(turno.fecha_apertura).toLocaleTimeString()} - {turno.fecha_cierre ? new Date(turno.fecha_cierre).toLocaleTimeString() : ''}</p>
+                  <p className="text-white text-sm">{turno?.fecha_apertura ? new Date(turno.fecha_apertura).toLocaleDateString() : '—'}</p>
+                  <p className="text-slate-400 text-xs">{turno?.fecha_apertura ? new Date(turno.fecha_apertura).toLocaleTimeString() : ''} - {turno?.fecha_cierre ? new Date(turno.fecha_cierre).toLocaleTimeString() : ''}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-white font-bold">Apertura: ${turno.monto_apertura.toFixed(2)}</p>
-                  <p className="text-green-400 text-sm">Ventas: ${turno.total_ventas.toFixed(2)}</p>
+                  <p className="text-white font-bold">Apertura: ${Number(turno?.monto_apertura ?? 0).toFixed(2)}</p>
+                  <p className="text-green-400 text-sm">Ventas: ${Number(turno?.total_ventas ?? 0).toFixed(2)}</p>
                 </div>
               </div>
             ))}
@@ -1198,8 +1208,10 @@ export default function AdminView() {
       </main>
 
       {/* MEJORA D: Modal obligatorio de apertura de caja */}
-      {cajaRequiereApertura && !cajaTurnoActivo && (
-        <CashRegisterOpenModal usuarioId={user!.id} onOpened={() => { setCajaRequiereApertura(false); refreshData(); }} />
+      {/* `user?.id` con optional chaining: si el usuario aún no se sincroniza,
+          se omite el modal (evita "Cannot read properties of null (reading 'id')") */}
+      {cajaRequiereApertura && !cajaTurnoActivo && user?.id && (
+        <CashRegisterOpenModal usuarioId={user.id} onOpened={() => { setCajaRequiereApertura(false); refreshData(); }} />
       )}
 
       {/* Modal de resumen de pedido con opción de marcar como entregado */}

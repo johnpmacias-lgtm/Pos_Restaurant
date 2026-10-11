@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { Usuario, Pedido, Mesa, Producto, Inventario, Reserva, CajaTurno } from '../types';
 import * as db from '../db/database';
+import { useAuth } from './AuthContext';
 
 interface AppContextType {
   user: Usuario | null;
@@ -20,6 +21,10 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  // Fuente de verdad de la sesión: AuthContext (login validado contra el
+  // backend SQLite vía POST /api/login). Así, al autenticar correctamente,
+  // las vistas reciben el usuario y ya no quedan "en blanco".
+  const { user: authUser, logout: authLogout } = useAuth();
   const [user, setUser] = useState<Usuario | null>(null);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
@@ -47,8 +52,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     db.initializeDatabase();
-    const currentUser = db.getCurrentUser();
-    if (currentUser) setUser(currentUser);
     refreshData();
 
     // Listen for cross-tab events
@@ -57,6 +60,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     return unsubscribe;
   }, [refreshData]);
+
+  // Sincronizar el usuario autenticado (backend) con el estado de la app.
+  // Se busca el registro completo en el almacén local para que las vistas
+  // tengan `nombre`, `activo`, etc.; si no existe, se construye uno
+  // defensivo a partir de los datos del login (nunca quedar en blanco).
+  useEffect(() => {
+    if (!authUser) {
+      setUser(null);
+      return;
+    }
+    const local = db.getUsuarios().find(
+      (u) => u.usuario.toLowerCase() === authUser.usuario.toLowerCase()
+    );
+    if (local) {
+      setUser(local);
+    } else {
+      setUser({
+        id: String(authUser.id),
+        nombre: authUser.nombre || authUser.usuario,
+        usuario: authUser.usuario,
+        password_hash: '',
+        rol: authUser.rol,
+        activo: true,
+      });
+    }
+  }, [authUser]);
 
   const handleLogin = (usuario: string, password: string): boolean => {
     const loggedUser = db.login(usuario, password);
@@ -69,8 +98,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const handleLogout = () => {
+    // Cierra la sesión tanto en el almacén local como en AuthContext
+    // (elimina token de sessionStorage) para volver al formulario de login.
     db.logout();
     setUser(null);
+    authLogout();
   };
 
   return (

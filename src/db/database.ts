@@ -480,7 +480,18 @@ export function toggleUsuarioActivo(userId: string): void {
 
 // ============ CAJA TURNOS (tabla caja_turnos) ============
 export function getCajaTurnos(): CajaTurno[] {
-  return getCollection<CajaTurno>(DB_KEYS.cajaTurnos);
+  // "Optimizamos la base" también en el cliente: se filtran registros null
+  // (datos corruptos de localStorage) y se normalizan campos numéricos/fechas
+  // que podrían llegar null desde SQLite, para que la vista de Caja nunca
+  // colapse con "Cannot read properties of null (reading 'id')".
+  return getCollection<CajaTurno>(DB_KEYS.cajaTurnos)
+    .filter((t): t is CajaTurno => !!t && typeof t === 'object' && !!t.id)
+    .map(t => ({
+      ...t,
+      monto_apertura: Number(t.monto_apertura ?? 0),
+      total_ventas: Number(t.total_ventas ?? 0),
+      fecha_apertura: t.fecha_apertura || new Date().toISOString(),
+    }));
 }
 
 export function getCajaTurnoActivo(): CajaTurno | null {
