@@ -1,4 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { LoginUser } from '../services/apiClient';
+// apiClient: envía los pedidos al BACKEND CENTRAL (SQLite del servidor) para
+// que celular y PC compartan los mismos datos. Sin esto, cada dispositivo
+// trabajaba "offline" solo con su localStorage.
+import { apiClient } from '../services/apiClient';
 import {
   Usuario, Mesa, Producto, Inventario, Pedido, Reserva,
   DetallePedido, PedidoDesechable, Pago, CajaApertura, CajaTurno,
@@ -261,15 +266,44 @@ export function getPedidosByCocina(): Pedido[] {
 }
 
 export function crearPedido(pedido: Omit<Pedido, 'id' | 'fecha_creacion' | 'fecha_actualizacion'>): Pedido {
-  const pedidos = getPedidos();
   const newPedido: Pedido = {
-    ...pedido,
+    ...(pedido as any),
     id: uuidv4(),
     fecha_creacion: new Date().toISOString(),
     fecha_actualizacion: new Date().toISOString(),
   };
+
+  // 1. Lo guarda localmente (para que la pantalla reaccione rápido)
+  const pedidos = getPedidos();
   pedidos.push(newPedido);
   setCollection(DB_KEYS.pedidos, pedidos);
+
+  // 2. ¡ENVÍA EL PEDIDO AL BACKEND CENTRAL!
+  // Esto es lo que faltaba para que la PC (y cocina/celulares) lo vean:
+  // sin esto cada dispositivo trabajaba solo con su localStorage.
+  apiClient.post('/pedidos', {
+    id: newPedido.id,
+    tipo: newPedido.tipo,
+    mesa_id: newPedido.mesa_id ?? null,
+    cliente_nombre: newPedido.cliente_nombre || '',
+    cliente_telefono: newPedido.cliente_telefono || '',
+    estado_cocina: newPedido.estado_cocina,
+    total: newPedido.total,
+    detalles: (newPedido.detalles || []).map(d => ({
+      producto_id: d.producto_id,
+      cantidad: d.cantidad,
+      precio_unitario: d.precio_unitario,
+      notas: (d as any).notas || '',
+    })),
+    desechables: (newPedido.desechables || []).map(d => ({
+      producto_id: d.producto_id,
+      cantidad: d.cantidad,
+      precio_unitario: (d as any).precio_unitario ?? 0,
+    })),
+  }).catch(err => {
+    console.error('Error enviando pedido al servidor central:', err);
+  });
+
   return newPedido;
 }
 
@@ -280,6 +314,12 @@ export function updateEstadoCocina(pedidoId: string, estado: EstadoCocina): Pedi
     pedidos[idx].estado_cocina = estado;
     pedidos[idx].fecha_actualizacion = new Date().toISOString();
     setCollection(DB_KEYS.pedidos, pedidos);
+
+    // Sincroniza el cambio de estado con el backend central para que
+    // cocina/meseros en otros dispositivos lo vean (fire-and-forget).
+    apiClient.put(`/pedidos/${pedidoId}/estado-cocina`, { estado_cocina: estado })
+      .catch(err => console.error('Error sincronizando estado de cocina:', err));
+
     return pedidos[idx];
   }
   return null;
@@ -299,10 +339,18 @@ export function cobrarPedido(
     if (pedidoIdx < 0) throw new Error('Pedido no encontrado');
 
     const pedido = pedidos[pedidoIdx];
-    const totalPagado = montoEfectivo + montoTarjeta + montoTransferencia;
+    const totalPagado = Number(montoEfectivo || 0) + Number(montoTarjeta || 0) + Number(montoTransferencia || 0);
 
-    if (totalPagado < pedido.total) {
-      throw new Error(`El monto pagado ($${totalPagado}) es menor al total ($${pedido.total})`);
+    // Saldo real pendiente (soporta cobros parciales previos). Antes se
+    // comparaba contra el total completo, lo que impedía cobrar un pedido
+    // con abonos y generaba errores confusos para el mesero.
+    const previo = (pedido.pagos || []).reduce((s, pg) => s + Number(pg.total_pagado || 0), 0);
+    const saldoPendiente = Math.max(0, Number(pedido.total || 0) - previo);
+    if (saldoPendiente <= 0) throw new Error('El pedido ya está pagado');
+    if (totalPagado <= 0) throw new Error('El monto pagado debe ser mayor a $0');
+
+    if (totalPagado < saldoPendiente) {
+      throw new Error(`El monto pagado ($${totalPagado}) es menor al saldo pendiente ($${saldoPendiente})`);
     }
 
     // Verificar inventario
@@ -312,7 +360,10 @@ export function cobrarPedido(
     // Verificar stock de productos del pedido
     for (const detalle of pedido.detalles) {
       const inv = inventario.find(i => i.producto_id === detalle.producto_id);
-      if (!inv) throw new Error(`Inventario no encontrado para producto ${detalle.producto_id}`);
+      if (!inv) {
+        // Inventario no registrado: no bloquear el cobro (el descuento simplemente no aplica)
+        continue;
+      }
       if (inv.stock_actual < detalle.cantidad) {
         const prod = productos.find(p => p.id === detalle.producto_id);
         throw new Error(`Stock insuficiente de ${prod?.nombre || detalle.producto_id}`);
@@ -320,9 +371,9 @@ export function cobrarPedido(
     }
 
     // Verificar stock de desechables
-    for (const desechable of pedido.desechables) {
+    for (const desechable of pedido.desechables ?? []) {
       const inv = inventario.find(i => i.producto_id === desechable.producto_id);
-      if (!inv) throw new Error(`Inventario no encontrado para desechable ${desechable.producto_id}`);
+      if (!inv) continue;
       if (inv.stock_actual < desechable.cantidad) {
         const prod = productos.find(p => p.id === desechable.producto_id);
         throw new Error(`Stock insuficiente de ${prod?.nombre || desechable.producto_id}`);
@@ -355,8 +406,11 @@ export function cobrarPedido(
       total_pagado: totalPagado,
     };
 
-    pedidos[pedidoIdx].pagos = [...pedido.pagos, pago];
-    pedidos[pedidoIdx].estado_pago = totalPagado >= pedido.total ? 'pagado' : 'parcial';
+    pedidos[pedidoIdx].pagos = [...(pedido.pagos ?? []), pago];
+    // Redondeo a 2 decimales para comparar saldos sin falsos "parcial" por
+    // errores de punto flotante.
+    const saldoRestante = Math.round((Number(pedido.total || 0) - previo - totalPagado) * 100) / 100;
+    pedidos[pedidoIdx].estado_pago = saldoRestante <= 0 ? 'pagado' : 'parcial';
     pedidos[pedidoIdx].fecha_actualizacion = new Date().toISOString();
 
     // Si es pedido de mesa y está pagado, liberar mesa
@@ -376,6 +430,7 @@ export function cobrarPedido(
     return { success: true, pedido: pedidos[pedidoIdx] };
   } catch (error: any) {
     // ROLLBACK
+    console.error('cobrarPedido falló:', error?.message);
     return { success: false, error: error.message };
   }
 }
@@ -454,6 +509,39 @@ export function getUsuarios(): Usuario[] {
   return getCollection<Usuario>(DB_KEYS.usuarios);
 }
 
+/**
+ * Sincroniza el usuario autenticado contra el backend (SQLite) con el
+ * almacén local. Las vistas operan sobre registros locales (mesas, pedidos,
+ * caja referencian ids locales), por lo que al iniciar sesión se garantiza
+ * que exista un registro con ese id; si ya existe (misma cuenta creada aquí),
+ * se preserva y solo se reactiva. Devuelve el registro local definitivo.
+ */
+export function ensureLocalUsuario(auth: LoginUser): Usuario {
+  const usuarios = getUsuarios();
+  const username = String(auth.username ?? '').trim().toLowerCase();
+  let idx = usuarios.findIndex(
+    (u) => u.id === String(auth.id) || u.usuario.toLowerCase() === username
+  );
+  if (idx < 0) idx = usuarios.findIndex((u) => u.id === username);
+  if (idx >= 0) {
+    if (!usuarios[idx].activo) {
+      usuarios[idx].activo = true;
+      setCollection(DB_KEYS.usuarios, usuarios);
+    }
+    return usuarios[idx];
+  }
+  const nuevo: Usuario = {
+    id: String(auth.id ?? uuidv4()),
+    nombre: username || 'usuario',
+    usuario: username,
+    password_hash: '', // la contraseña se valida exclusivamente en el backend
+    rol: auth.rol,
+    activo: true,
+  };
+  setCollection(DB_KEYS.usuarios, [...usuarios, nuevo]);
+  return nuevo;
+}
+
 export function addUsuario(usuario: Omit<Usuario, 'id' | 'password_hash'> & { password: string }): Usuario {
   const usuarios = getUsuarios();
   const newUser: Usuario = {
@@ -480,7 +568,18 @@ export function toggleUsuarioActivo(userId: string): void {
 
 // ============ CAJA TURNOS (tabla caja_turnos) ============
 export function getCajaTurnos(): CajaTurno[] {
-  return getCollection<CajaTurno>(DB_KEYS.cajaTurnos);
+  // "Optimizamos la base" también en el cliente: se filtran registros null
+  // (datos corruptos de localStorage) y se normalizan campos numéricos/fechas
+  // que podrían llegar null desde SQLite, para que la vista de Caja nunca
+  // colapse con "Cannot read properties of null (reading 'id')".
+  return getCollection<CajaTurno>(DB_KEYS.cajaTurnos)
+    .filter((t): t is CajaTurno => !!t && typeof t === 'object' && !!t.id)
+    .map(t => ({
+      ...t,
+      monto_apertura: Number(t.monto_apertura ?? 0),
+      total_ventas: Number(t.total_ventas ?? 0),
+      fecha_apertura: t.fecha_apertura || new Date().toISOString(),
+    }));
 }
 
 export function getCajaTurnoActivo(): CajaTurno | null {

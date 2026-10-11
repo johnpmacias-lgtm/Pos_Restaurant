@@ -50,9 +50,23 @@ const PORT = process.env.PORT || 3001;
 // MIDDLEWARE
 // ============================================
 
-// CORS seguro - solo permite el frontend local
+// CORS: se permite el origen configurado, cualquier origin de localhost/127.0.0.1
+// en puertos arbitrarios (dev local) y requests sin Origin (curl, app nativa).
+// Un origin no permitido devolvía CORS errors que bloqueaban el login desde el
+// navegador cuando el frontend corría en un puerto distinto al esperado.
+const ALLOWED_ORIGINS = new Set([FRONTEND_URL]);
+
+const corsOriginFn = (origin, callback) => {
+  if (!origin || ALLOWED_ORIGINS.has(origin)) return callback(null, true);
+  // Orígenes locales de desarrollo (http://localhost:<cualquier-puerto>)
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+    return callback(null, true);
+  }
+  return callback(null, false); // sin CORS header -> el navegador lo bloquea
+};
+
 app.use(cors({
-  origin: FRONTEND_URL,
+  origin: corsOriginFn,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -92,8 +106,19 @@ app.get('/api/health', (req, res) => {
 // --------------------------------------------
 
 /**
+ * POST /api/login
+ * Login de usuario (público) - contrato estándar:
+ *   Body:  { username, password }
+ *   Resp:  { success: true, user: { id, username, rol } }
+ *          { success: false, message: 'Credenciales incorrectas' }
+ */
+app.post('/api/login', (req, res) => {
+  authController.login(req, res);
+});
+
+/**
  * POST /api/auth/login
- * Login de usuario (público)
+ * Alias compatible con versiones anteriores del frontend.
  */
 app.post('/api/auth/login', (req, res) => {
   authController.login(req, res);

@@ -1,5 +1,6 @@
 import React from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { AppProvider } from './context/AppContext'; // <-- 1. Importamos el AppProvider
 import Login from './components/Login';
 import AdminView from './views/AdminView';
 import WaiterView from './views/WaiterView';
@@ -35,7 +36,9 @@ function AppContent() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppContent />
+      <AppProvider> {/* <-- 2. Envolvemos la aplicación aquí */}
+        <AppContent />
+      </AppProvider>
     </AuthProvider>
   );
 }

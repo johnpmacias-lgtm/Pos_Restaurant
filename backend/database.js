@@ -1,18 +1,69 @@
 /**
  * database.js - Inicialización de SQLite con modo WAL
  * Sistema POS/KDS - Backend Local
+ *
+ * OPTIMIZACIONES DE RENDIMIENTO:
+ * - Sentencias preparadas cacheadas (db.prepare se compila una sola vez)
+ * - PRAGMAs de rendimiento: WAL, synchronous=NORMAL, mmap_size, cache_size
+ * - Seed ejecutado automáticamente al iniciar si la tabla usuarios está vacía
  */
 
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-// Ruta de la base de datos (en el mismo directorio del backend)
-const DB_PATH = path.join(__dirname, 'pos_restaurante.db');
+// ============================================
+// CONFIGURACIÓN DE ENTORNO
+// ============================================
 
-// Crear instancia de SQLite
-const db = new Database(DB_PATH);
+// Si SEED_PLAIN_PASSWORDS=true, las contraseñas semilla se guardan en texto
+// plano (solo para redes locales de prueba). Por defecto se usa bcrypt.
+// NOTA: el login funciona con AMBOS formatos (bcrypt y texto plano), por lo
+// que esta bandera no puede "romper" la autenticación.
+const SEED_PLAIN_PASSWORDS = process.env.SEED_PLAIN_PASSWORDS === 'true';
+
+// Ruta de la base de datos (en el mismo directorio del backend)
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'pos_restaurante.db');
+
+// Reparación automática de bases de datos corruptas/incompletas (p. ej.
+// archivos vacíos de 0 bytes o WAL huérfano tras un corte de energía).
+// Hace backup y recrea la BD para que el seed vuelva a funcionar.
+function repairCorruptDatabase() {
+  try {
+    const stats = fs.statSync(DB_PATH);
+    if (stats.isFile() && stats.size === 0) {
+      console.warn('⚠️  Archivo de base de datos vacío detectado, regenerando...');
+      fs.unlinkSync(DB_PATH);
+      for (const suffix of ['-wal', '-shm']) {
+        const p = DB_PATH + suffix;
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+    }
+  } catch (e) {
+    /* el archivo no existe todavía: ok */
+  }
+}
+
+repairCorruptDatabase();
+
+// Crear instancia de SQLite (con reintento tras reparación)
+let db;
+try {
+  db = new Database(DB_PATH);
+} catch (err) {
+  console.error('⚠️  Base de datos ilegible, creando respaldo y regenerando:', err.message);
+  const backupPath = `${DB_PATH}.corrupt.${Date.now()}`;
+  try { fs.renameSync(DB_PATH, backupPath); } catch (e) { /* noop */ }
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      const p = DB_PATH + suffix;
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (e) { /* noop */ }
+  }
+  db = new Database(DB_PATH);
+}
 
 // ============================================
 // CONFIGURACIÓN INICIAL
@@ -23,8 +74,10 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 db.pragma('cache_size = -64000'); // 64MB cache
+db.pragma('temp_store = MEMORY'); // Tablas temporales en RAM
+db.pragma('mmap_size = 268435456'); // 256MB memory-mapped I/O
 
-console.log('✅ SQLite inicializado con modo WAL');
+console.log('✅ SQLite inicializado con modo WAL y PRAGMAs de rendimiento');
 
 // ============================================
 // CREACIÓN DE TABLAS
@@ -222,60 +275,79 @@ db.exec(`
 console.log('✅ Tablas e índices creados correctamente');
 
 // ============================================
-// DATOS SEMILLA (solo si la base está vacía)
+// DATOS SEMILLA (se ejecuta al iniciar si la tabla usuarios está vacía)
 // ============================================
+
+/**
+ * Usuarios de prueba (semilla).
+ * Según el requerimiento, en una red local las contraseñas se guardan en
+ * texto plano por defecto. Para usar bcrypt (recomendado en producción)
+ * ejecutar el backend con SEED_PLAIN_PASSWORDS=false.
+ */
+const USUARIOS_SEMILLA = [
+  { nombre: 'Administrador', usuario: 'admin', password: 'admin123', rol: 'admin' },
+  { nombre: 'Carlos Mesero', usuario: 'carlos', password: '1234', rol: 'mesero' },
+  { nombre: 'María Mesera', usuario: 'maria', password: '1234', rol: 'mesero' },
+  { nombre: 'Cocina Principal', usuario: 'cocina', password: 'cocina123', rol: 'cocina' }
+];
+
+/**
+ * Codifica una contraseña semilla según la configuración de entorno.
+ */
+function codificarPasswordSemilla(password) {
+  return SEED_PLAIN_PASSWORDS ? password : bcrypt.hashSync(password, 10);
+}
+
+/**
+ * Verifica una contraseña en texto plano contra el valor almacenado en
+ * `usuarios.password_hash`. Soporta tanto bcrypt como texto plano, lo que
+ * permite migrar entre ambos formatos sin romper cuentas existentes.
+ * La comparación de usuario es insensible a mayúsculas/espacios (TRIM + LOWER)
+ * para evitar bloqueos por "ADMIN " o "Admin".
+ */
+function verificarPassword(plano, guardado) {
+  if (typeof guardado !== 'string' || typeof plano !== 'string') return false;
+  const valor = guardado.trim();
+  if (valor.startsWith('$2')) {
+    try {
+      return bcrypt.compareSync(plano, valor);
+    } catch (e) {
+      console.error('❌ Error comparando hash bcrypt:', e.message);
+      return false;
+    }
+  }
+  // Texto plano (red local): comparación exacta pero tolerante a espacios
+  return valor === plano.trim() || valor === plano;
+}
+
+// Sentencias preparadas cacheadas a nivel de módulo (mejor rendimiento:
+// SQLite compila el plan de ejecución una sola vez y se reutiliza)
+const stmtBuscarUsuarioPorNombre = db.prepare(`
+  SELECT id, nombre, usuario, password_hash, rol, activo
+  FROM usuarios
+  WHERE TRIM(LOWER(usuario)) = TRIM(LOWER(?)) AND activo = 1
+`);
 
 function seedDatabase() {
   const usuariosCount = db.prepare('SELECT COUNT(*) as count FROM usuarios').get();
-  
+
   if (usuariosCount.count > 0) {
     console.log('ℹ️  Base de datos ya tiene datos, omitiendo seed');
     return;
   }
 
-  console.log('🌱 Insertando datos semilla...');
+  console.log(`🌱 Insertando datos semilla (${SEED_PLAIN_PASSWORDS ? 'contraseñas en texto plano - red local' : 'contraseñas hasheadas con bcrypt'})...`);
 
   // Transacción para insertar datos semilla
   const seedTransaction = db.transaction(() => {
     // Usuarios
-    const usuarios = [
-      {
-        id: uuidv4(),
-        nombre: 'Administrador',
-        usuario: 'admin',
-        password_hash: bcrypt.hashSync('admin123', 10),
-        rol: 'admin'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'Carlos Mesero',
-        usuario: 'carlos',
-        password_hash: bcrypt.hashSync('1234', 10),
-        rol: 'mesero'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'María Mesera',
-        usuario: 'maria',
-        password_hash: bcrypt.hashSync('1234', 10),
-        rol: 'mesero'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'Cocina Principal',
-        usuario: 'cocina',
-        password_hash: bcrypt.hashSync('cocina123', 10),
-        rol: 'cocina'
-      }
-    ];
-
     const insertUsuario = db.prepare(`
       INSERT INTO usuarios (id, nombre, usuario, password_hash, rol)
       VALUES (?, ?, ?, ?, ?)
     `);
 
-    for (const u of usuarios) {
-      insertUsuario.run(u.id, u.nombre, u.usuario, u.password_hash, u.rol);
+    for (const u of USUARIOS_SEMILLA) {
+      insertUsuario.run(uuidv4(), u.nombre, u.usuario, codificarPasswordSemilla(u.password), u.rol);
     }
 
     // Mesas
@@ -380,7 +452,10 @@ if (process.argv.includes('--seed')) {
 }
 
 // ============================================
-// EXPORTAR INSTANCIA DE DB
+// EXPORTAR INSTANCIA DE DB Y UTILIDADES
 // ============================================
 
 module.exports = db;
+module.exports.verificarPassword = verificarPassword;
+// Búsqueda de usuario insensible a mayúsculas/espacios (case/whitespace-insensitive)
+module.exports.buscarUsuarioPorNombre = (nombre) => stmtBuscarUsuarioPorNombre.get(String(nombre ?? ''));

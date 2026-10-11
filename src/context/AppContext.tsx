@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
 import { Usuario, Pedido, Mesa, Producto, Inventario, Reserva, CajaTurno } from '../types';
 import * as db from '../db/database';
+import { useAuth } from './AuthContext';
 
 interface AppContextType {
   user: Usuario | null;
@@ -20,6 +21,10 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  // Fuente de verdad de la sesión: AuthContext (login validado contra el
+  // backend SQLite vía POST /api/login). Así, al autenticar correctamente,
+  // las vistas reciben el usuario y ya no quedan "en blanco".
+  const { user: authUser, logout: authLogout } = useAuth();
   const [user, setUser] = useState<Usuario | null>(null);
   const [pedidos, setPedidos] = useState<Pedido[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
@@ -47,8 +52,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     db.initializeDatabase();
-    const currentUser = db.getCurrentUser();
-    if (currentUser) setUser(currentUser);
     refreshData();
 
     // Listen for cross-tab events
@@ -58,7 +61,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, [refreshData]);
 
+  // Sincronizar el usuario autenticado (backend) con el estado de la app.
+  // `ensureLocalUsuario` crea/recupera el registro local correspondiente al
+  // usuario del backend: las vistas necesitan un id local ESTABLE, porque los
+  // pedidos/mesas/caja guardan referencias a ese id. Usar un objeto desalineado
+  // (o nulo) provocaba "user is null" y fallos al cobrar/cerrar sesión.
+  useEffect(() => {
+    if (!authUser) {
+      setUser(null);
+      return;
+    }
+    try {
+      db.initializeDatabase();
+      const local = db.ensureLocalUsuario({
+        id: String(authUser.id ?? ''),
+        username: authUser.usuario,
+        rol: authUser.rol,
+      });
+      setUser(local);
+    } catch (err) {
+      console.error('Error al sincronizar usuario local:', err);
+      // Nunca quedar en blanco: fallback defensivo con los datos del login.
+      setUser({
+        id: String(authUser.id ?? 'invitado'),
+        nombre: authUser.nombre || authUser.usuario,
+        usuario: authUser.usuario,
+        password_hash: '',
+        rol: authUser.rol,
+        activo: true,
+      });
+    }
+  }, [authUser]);
+
   const handleLogin = (usuario: string, password: string): boolean => {
+    // Obsoleto: la autenticación real pasa por AuthContext/API (SQLite).
+    // Se mantiene por compatibilidad con llamadas antiguas.
     const loggedUser = db.login(usuario, password);
     if (loggedUser) {
       setUser(loggedUser);
@@ -69,8 +106,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const handleLogout = () => {
-    db.logout();
+    // Delegar SIEMPRE en AuthContext.logout(): es el que limpia token,
+    // sessionStorage y localStorage por completo y pone user=null, lo que
+    // hace que App.tsx muestre el Login. Antes aquí se hacía setUser(null)
+    // manual y quedaban restos de sesión que "revivían" al usuario, por lo
+    // que parecía que no se podía cerrar sesión.
+    authLogout();
     setUser(null);
+    refreshData();
   };
 
   return (

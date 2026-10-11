@@ -9,18 +9,67 @@ export default function Login() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  /**
+   * Manejador del formulario de login.
+   *
+   * Autenticación 100% contra el backend:
+   *   POST ${import.meta.env.VITE_API_URL}/api/login  ({ username, password })
+   *
+   * Ya no se usa localStorage ni funciones locales como `simpleHash`;
+   * las credenciales se validan contra la tabla `usuarios` (SQLite).
+   */
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
     try {
-      const success = await login(usuario, password);
-      if (!success) {
-        setError('Usuario o contraseña incorrectos');
+      const apiUrl = ((import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001')
+        .replace(/\/+$/, '');
+
+      const response = await fetch(`${apiUrl}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: usuario, password }),
+      });
+
+      let data: any = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
+
+      if (response.ok && data.success) {
+        // Guardar token de sesión si el backend lo devuelve (sessionStorage,
+        // usado por el resto de endpoints protegidos).
+        const token = data.data?.token;
+        if (token) {
+          sessionStorage.setItem('auth_token', token);
+        }
+
+        // Actualizar el estado de autenticación global -> redirige al Dashboard
+        // según el rol (admin / mesero / cocina). login() revalida contra la
+        // API y setea el usuario en AuthContext.
+        const ok = await login(usuario, password);
+        if (!ok) {
+          throw new Error('no-auth');
+        }
+      } else {
+        const message =
+          response.status === 404
+            ? 'Endpoint /api/login no disponible (¿backend actualizado?). Reinicie el servidor.'
+            : data.message || data.error || 'Credenciales incorrectas';
+        setError(message);
+        alert(message);
       }
     } catch (err) {
-      setError('Error de conexión con el servidor');
+      const message =
+        err instanceof Error && err.message === 'no-auth'
+          ? 'El servidor validó las credenciales pero no se pudo iniciar la sesión'
+          : 'Error de conexión con el servidor';
+      setError(message);
+      alert(message);
     } finally {
       setLoading(false);
     }
@@ -37,7 +86,7 @@ export default function Login() {
           <p className="text-slate-400 mt-2">Sistema de Gestión de Restaurante</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="bg-white/10 backdrop-blur-xl rounded-2xl p-8 shadow-2xl border border-white/20">
+        <form onSubmit={handleLogin} className="bg-white/10 backdrop-blur-xl rounded-2xl p-8 shadow-2xl border border-white/20">
           <h2 className="text-xl font-semibold text-white mb-6">Iniciar Sesión</h2>
 
           {error && (

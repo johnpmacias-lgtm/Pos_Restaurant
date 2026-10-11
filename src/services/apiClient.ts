@@ -3,7 +3,24 @@
  * Reemplaza localStorage y database.ts (mock local)
  */
 
-const API_URL = 'http://localhost:3001/api';
+/**
+ * URL base de la API. Detección DINÁMICA del host:
+ * - Si VITE_API_URL está definida (.env), se usa tal cual.
+ * - Si NO está definida, se construye a partir de window.location.hostname,
+ *   de modo que un celular conectado a la red local apunta automáticamente
+ *   a la PC que corre el backend (ej: http://192.168.1.50:3001) en lugar
+ *   de quedarse "solo" intentando hablar con su propio localhost.
+ */
+const hostname =
+  (typeof window !== 'undefined' && window.location?.hostname) || 'localhost';
+
+export const API_URL = (
+  ((import.meta as any).env?.VITE_API_URL as string | undefined)?.trim() ||
+  `http://${hostname}:3001`
+).replace(/\/+$/, '');
+
+/** Endpoint completo estilo `${API_URL}/api/...` (para fetch directos) */
+export const API_BASE = `${API_URL}/api`;
 
 // ============================================
 // TIPOS
@@ -16,9 +33,18 @@ export interface Usuario {
   rol: 'admin' | 'mesero' | 'cocina';
 }
 
+/** Usuario en el formato del contrato estándar de /api/login */
+export interface LoginUser {
+  id: string;
+  username: string;
+  rol: 'admin' | 'mesero' | 'cocina';
+}
+
 export interface LoginResponse {
   success: boolean;
   message?: string;
+  /** Contrato estándar: presente cuando success === true */
+  user?: LoginUser;
   data?: {
     token: string;
     usuario: Usuario;
@@ -63,11 +89,22 @@ export function isAuthenticated(): boolean {
 // FUNCIÓN BASE DE FETCH
 // ============================================
 
+/**
+ * Normaliza el endpoint para evitar la ruta duplicada `/api/api/...`.
+ * (Bug que causaba 404 en el login: authAPI.login pasaba '/api/login'
+ * y aquí se volvía a prefijar con '/api'.)
+ */
+function normalizeEndpoint(endpoint: string): string {
+  if (endpoint.startsWith('/api/')) return endpoint;
+  if (endpoint === '/api') return endpoint;
+  return `/api${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+}
+
 async function fetchAPI<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-  const url = `${API_URL}${endpoint}`;
+  const url = `${API_URL}${normalizeEndpoint(endpoint)}`;
   const token = getToken();
 
   const headers: Record<string, string> = {
@@ -88,20 +125,41 @@ async function fetchAPI<T = any>(
       headers,
     });
 
-    const data = await response.json();
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
 
-    // Si el token expiró, limpiar sesión
-    if (response.status === 401 || response.status === 403) {
+    // IMPORTANTE: no interpretar un 401/403 del ENDPOINT DE LOGIN como
+    // "token expirado". Ese es un simple "credenciales incorrectas" y debe
+    // devolverse al llamador para que muestre la alerta correspondiente.
+    // Antes, cualquier 401 limpiaba la sesión y redirigía a /login, lo que
+    // impedía ingresar al sistema incluso con credenciales válidas cuando
+    // había una ruta duplicada u otro error de configuración.
+    const isAuthEndpoint = normalizeEndpoint(endpoint).startsWith('/auth') ||
+      normalizeEndpoint(endpoint) === '/login';
+
+    if ((response.status === 401 || response.status === 403) && !isAuthEndpoint) {
       setToken(null);
-      window.location.href = '/login';
+    }
+
+    if (!response.ok && data.success === undefined) {
+      return {
+        success: false,
+        error: data.error || `Error HTTP ${response.status}`,
+        message: data.message || `Error HTTP ${response.status}`,
+      };
     }
 
     return data;
   } catch (error) {
-    console.error('❌ Error en API call:', error);
+    console.error('❌ Error en API call:', url, error);
     return {
       success: false,
       error: 'Error de conexión con el servidor',
+      message: 'Error de conexión con el servidor',
     };
   }
 }
@@ -111,17 +169,31 @@ async function fetchAPI<T = any>(
 // ============================================
 
 export const authAPI = {
-  login: async (usuario: string, password: string): Promise<LoginResponse> => {
-    const response = await fetchAPI<LoginResponse['data']>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ usuario, password }),
-    });
+  /**
+   * POST ${VITE_API_URL}/api/login
+   * Envía `{ username, password }`. El backend responde:
+   *   éxito -> { success: true, user: { id, username, rol }, data: { token, usuario } }
+   *   fallo -> { success: false, message: 'Credenciales incorrectas' }
+   */
+  login: async (username: string, password: string): Promise<LoginResponse> => {
+    // fetchAPI ya normaliza la ruta -> `${API_URL}/api/login` (sin duplicar /api)
+    const response = await fetchAPI<LoginResponse>(
+      '/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }
+    );
 
-    if (response.success && response.data?.token) {
-      setToken(response.data.token);
+    // El backend responde el objeto de login directamente (sin envolverlo en
+    // `data`), por lo que se castean los campos específicos del contrato.
+    const loginData = response as unknown as LoginResponse;
+
+    if (loginData.success && loginData.data?.token) {
+      setToken(loginData.data.token);
     }
 
-    return response as LoginResponse;
+    return loginData;
   },
 
   logout: () => {
@@ -370,7 +442,7 @@ export const configuracionAPI = {
 
   descargarBackup: async () => {
     const token = getToken();
-    const response = await fetch(`${API_URL}/backup`, {
+    const response = await fetch(`${API_URL}/api/backup`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
@@ -443,5 +515,79 @@ export const usuariosAPI = {
     return fetchAPI(`/usuarios/${id}/toggle-activo`, {
       method: 'PUT',
     });
+  },
+};
+
+// ============================================
+// API CLIENT GENÉRICO (compatibilidad)
+// ============================================
+
+/**
+ * Cliente genérico con detección dinámica de host. Permite a cualquier
+ * módulo (ej: src/db/database.ts) enviar datos al backend central sin
+ * hardcodear localhost — así el celular y la PC comparten el mismo
+ "cerebro" (SQLite del servidor).
+ */
+/** Headers con token JWT si hay sesión activa (el backend exige auth en /api/*) */
+function withAuthHeader(headers: Record<string, string>): Record<string, string> {
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * Resuelve la URL base para escrituras (POST/PUT).
+ * - Si VITE_API_URL apunta a localhost pero el usuario entró desde la red
+ *   (ej: celular vía http://192.168.x.x:3000), se IGNORA localhost y se usa
+ *   el hostname actual + :3001 — así el dispositivo habla con el backend de
+ *   la PC en vez de su propio "localhost" vacío.
+ * - En desarrollo (mismo host) también funciona vía el proxy de Vite.
+ */
+function writeBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const currentHost = window.location?.hostname || '';
+    const envIsLocalhost = /localhost|127\.0\.0\.1/.test(API_URL);
+    const viewingFromLan = currentHost && !/localhost|127\.0\.0\.1/.test(currentHost);
+    if (envIsLocalhost && viewingFromLan) {
+      return `http://${currentHost}:3001`;
+    }
+  }
+  return API_URL;
+}
+
+export const apiClient = {
+  /** GET ${API_URL}/api/<endpoint> */
+  async get(endpoint: string): Promise<any> {
+    const res = await fetch(
+      `${API_URL}${normalizeEndpoint(endpoint)}`,
+      { headers: withAuthHeader({}) }
+    );
+    return res.json();
+  },
+
+  /** POST al backend central (usa host dinámico si se accede desde la LAN) */
+  async post(endpoint: string, data: any): Promise<any> {
+    const res = await fetch(
+      `${writeBaseUrl()}${normalizeEndpoint(endpoint)}`,
+      {
+        method: 'POST',
+        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+      }
+    );
+    return res.json();
+  },
+
+  /** PUT al backend central (usa host dinámico si se accede desde la LAN) */
+  async put(endpoint: string, data: any): Promise<any> {
+    const res = await fetch(
+      `${writeBaseUrl()}${normalizeEndpoint(endpoint)}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+      }
+    );
+    return res.json();
   },
 };

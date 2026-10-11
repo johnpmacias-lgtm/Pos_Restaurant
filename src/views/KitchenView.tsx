@@ -16,7 +16,8 @@ export default function KitchenView() {
     return () => { clearInterval(interval); unsub(); };
   }, [refreshPedidos]);
 
-  const pedidosActivos = pedidos.filter(p => p.estado_cocina !== 'entregado' && p.tipo === 'mesa');
+  // Todos los pedidos (mesa y para llevar) entran a las columnas del kanban
+  const pedidosActivos = pedidos.filter(p => p.estado_cocina !== 'entregado');
   const pendientes = pedidosActivos.filter(p => p.estado_cocina === 'pendiente');
   const preparando = pedidosActivos.filter(p => p.estado_cocina === 'preparando');
   const listos = pedidosActivos.filter(p => p.estado_cocina === 'listo');
@@ -64,8 +65,11 @@ export default function KitchenView() {
       >
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <span className="bg-orange-500 text-white text-sm font-bold px-3 py-1 rounded-full">
-              Mesa {pedido.mesa_id ? (db.getMesas().find(m => m.id === pedido.mesa_id)?.numero_mesa || '?') : '?'}
+            <span className={`${pedido.tipo === 'llevar' ? 'bg-purple-500' : 'bg-orange-500'} text-white text-sm font-bold px-3 py-1 rounded-full`}>
+              {pedido.tipo === 'llevar' 
+                ? `📦 Llevar: ${pedido.cliente_nombre || 'Cliente'}`
+                : `Mesa ${pedido.mesa_id ? (db.getMesas().find(m => m.id === pedido.mesa_id)?.numero_mesa || '?') : '?'}`
+              }
             </span>
             <span className="text-slate-400 text-xs">#{pedido.id.slice(-4)}</span>
           </div>
@@ -219,21 +223,6 @@ export default function KitchenView() {
           </div>
         </div>
       </div>
-
-      {/* Pedidos para llevar */}
-      {pedidos.filter(p => p.tipo === 'llevar' && p.estado_cocina !== 'entregado').length > 0 && (
-        <div className="bg-slate-800 border-t border-slate-700 px-6 py-3">
-          <h3 className="text-white font-bold text-sm mb-2">📦 Pedidos Para Llevar</h3>
-          <div className="flex gap-3 overflow-x-auto">
-            {pedidos.filter(p => p.tipo === 'llevar' && p.estado_cocina !== 'entregado').map(p => (
-              <div key={p.id} className="bg-slate-700 rounded-lg px-4 py-2 min-w-[200px]">
-                <p className="text-white font-medium text-sm">{p.cliente_nombre}</p>
-                <p className="text-slate-400 text-xs">{p.detalles.length} productos</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* Modal de Historial */}
       {showHistory && (
