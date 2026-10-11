@@ -1,12 +1,25 @@
 /**
  * database.js - Inicialización de SQLite con modo WAL
  * Sistema POS/KDS - Backend Local
+ *
+ * OPTIMIZACIONES DE RENDIMIENTO:
+ * - Sentencias preparadas cacheadas (db.prepare se compila una sola vez)
+ * - PRAGMAs de rendimiento: WAL, synchronous=NORMAL, mmap_size, cache_size
+ * - Seed ejecutado automáticamente al iniciar si la tabla usuarios está vacía
  */
 
 const Database = require('better-sqlite3');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
+
+// ============================================
+// CONFIGURACIÓN DE ENTORNO
+// ============================================
+
+// Si SEED_PLAIN_PASSWORDS=true, las contraseñas semilla se guardan en texto
+// plano (solo para redes locales de prueba). Por defecto se usa bcrypt.
+const SEED_PLAIN_PASSWORDS = process.env.SEED_PLAIN_PASSWORDS === 'true';
 
 // Ruta de la base de datos (en el mismo directorio del backend)
 const DB_PATH = path.join(__dirname, 'pos_restaurante.db');
@@ -23,8 +36,10 @@ db.pragma('journal_mode = WAL');
 db.pragma('synchronous = NORMAL');
 db.pragma('foreign_keys = ON');
 db.pragma('cache_size = -64000'); // 64MB cache
+db.pragma('temp_store = MEMORY'); // Tablas temporales en RAM
+db.pragma('mmap_size = 268435456'); // 256MB memory-mapped I/O
 
-console.log('✅ SQLite inicializado con modo WAL');
+console.log('✅ SQLite inicializado con modo WAL y PRAGMAs de rendimiento');
 
 // ============================================
 // CREACIÓN DE TABLAS
@@ -222,60 +237,62 @@ db.exec(`
 console.log('✅ Tablas e índices creados correctamente');
 
 // ============================================
-// DATOS SEMILLA (solo si la base está vacía)
+// DATOS SEMILLA (se ejecuta al iniciar si la tabla usuarios está vacía)
 // ============================================
+
+/**
+ * Usuarios de prueba (semilla).
+ * Según el requerimiento, en una red local las contraseñas se guardan en
+ * texto plano por defecto. Para usar bcrypt (recomendado en producción)
+ * ejecutar el backend con SEED_PLAIN_PASSWORDS=false.
+ */
+const USUARIOS_SEMILLA = [
+  { nombre: 'Administrador', usuario: 'admin', password: 'admin123', rol: 'admin' },
+  { nombre: 'Carlos Mesero', usuario: 'carlos', password: '1234', rol: 'mesero' },
+  { nombre: 'María Mesera', usuario: 'maria', password: '1234', rol: 'mesero' },
+  { nombre: 'Cocina Principal', usuario: 'cocina', password: 'cocina123', rol: 'cocina' }
+];
+
+/**
+ * Codifica una contraseña semilla según la configuración de entorno.
+ */
+function codificarPasswordSemilla(password) {
+  return SEED_PLAIN_PASSWORDS ? password : bcrypt.hashSync(password, 10);
+}
+
+/**
+ * Verifica una contraseña en texto plano contra el valor almacenado en
+ * `usuarios.password_hash`. Soporta tanto bcrypt como texto plano, lo que
+ * permite migrar entre ambos formatos sin romper cuentas existentes.
+ */
+function verificarPassword(plano, guardado) {
+  if (typeof guardado !== 'string') return false;
+  if (guardado.startsWith('$2')) {
+    return bcrypt.compareSync(plano, guardado);
+  }
+  return guardado === plano;
+}
 
 function seedDatabase() {
   const usuariosCount = db.prepare('SELECT COUNT(*) as count FROM usuarios').get();
-  
+
   if (usuariosCount.count > 0) {
     console.log('ℹ️  Base de datos ya tiene datos, omitiendo seed');
     return;
   }
 
-  console.log('🌱 Insertando datos semilla...');
+  console.log(`🌱 Insertando datos semilla (${SEED_PLAIN_PASSWORDS ? 'contraseñas en texto plano - red local' : 'contraseñas hasheadas con bcrypt'})...`);
 
   // Transacción para insertar datos semilla
   const seedTransaction = db.transaction(() => {
     // Usuarios
-    const usuarios = [
-      {
-        id: uuidv4(),
-        nombre: 'Administrador',
-        usuario: 'admin',
-        password_hash: bcrypt.hashSync('admin123', 10),
-        rol: 'admin'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'Carlos Mesero',
-        usuario: 'carlos',
-        password_hash: bcrypt.hashSync('1234', 10),
-        rol: 'mesero'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'María Mesera',
-        usuario: 'maria',
-        password_hash: bcrypt.hashSync('1234', 10),
-        rol: 'mesero'
-      },
-      {
-        id: uuidv4(),
-        nombre: 'Cocina Principal',
-        usuario: 'cocina',
-        password_hash: bcrypt.hashSync('cocina123', 10),
-        rol: 'cocina'
-      }
-    ];
-
     const insertUsuario = db.prepare(`
       INSERT INTO usuarios (id, nombre, usuario, password_hash, rol)
       VALUES (?, ?, ?, ?, ?)
     `);
 
-    for (const u of usuarios) {
-      insertUsuario.run(u.id, u.nombre, u.usuario, u.password_hash, u.rol);
+    for (const u of USUARIOS_SEMILLA) {
+      insertUsuario.run(uuidv4(), u.nombre, u.usuario, codificarPasswordSemilla(u.password), u.rol);
     }
 
     // Mesas
@@ -380,7 +397,8 @@ if (process.argv.includes('--seed')) {
 }
 
 // ============================================
-// EXPORTAR INSTANCIA DE DB
+// EXPORTAR INSTANCIA DE DB Y UTILIDADES
 // ============================================
 
 module.exports = db;
+module.exports.verificarPassword = verificarPassword;

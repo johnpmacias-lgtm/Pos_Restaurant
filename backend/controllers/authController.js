@@ -2,44 +2,49 @@ const db = require('../database');
 const bcrypt = require('bcryptjs');
 const { generarToken } = require('../middleware/authMiddleware');
 
+// Utilidad compartida definida en database.js: soporta bcrypt y texto plano
+const verificarPassword = db.verificarPassword;
+
 const SALT_ROUNDS = 10;
 
 /**
  * Login de usuario
+/**
+ * POST /api/login - Login de usuario
+ *
+ * Recibe `{ username, password }` (también acepta `usuario`) en el body.
+ * Responde:
+ *   - Éxito: { success: true, user: { id, username, rol }, token }
+ *   - Fallo: { success: false, message: 'Credenciales incorrectas' }
  */
 async function login(req, res) {
-  const { usuario, password } = req.body;
+  // Aceptamos tanto `username` (estándar del requerimiento) como `usuario`
+  const username = req.body.username || req.body.usuario;
+  const password = req.body.password;
 
   // Validación de entrada
-  if (!usuario || !password) {
+  if (!username || !password) {
     return res.status(400).json({
       success: false,
+      message: 'Usuario y contraseña son requeridos',
       error: 'Usuario y contraseña son requeridos'
     });
   }
 
   try {
-    // Buscar usuario
+    // Buscar usuario en SQLite (sentencia preparada cacheada por better-sqlite3)
     const user = db.prepare(`
       SELECT id, nombre, usuario, password_hash, rol, activo
       FROM usuarios
       WHERE usuario = ? AND activo = 1
-    `).get(usuario);
+    `).get(username);
 
-    if (!user) {
+    // Verificar contraseña (soporta bcrypt y texto plano de red local)
+    if (!user || !verificarPassword(password, user.password_hash)) {
       return res.status(401).json({
         success: false,
-        error: 'Credenciales inválidas'
-      });
-    }
-
-    // Verificar contraseña con bcrypt
-    const passwordValido = await bcrypt.compare(password, user.password_hash);
-
-    if (!passwordValido) {
-      return res.status(401).json({
-        success: false,
-        error: 'Credenciales inválidas'
+        message: 'Credenciales incorrectas',
+        error: 'Credenciales incorrectas'
       });
     }
 
@@ -48,7 +53,7 @@ async function login(req, res) {
 
     // Actualizar último login
     db.prepare(`
-      UPDATE usuarios 
+      UPDATE usuarios
       SET actualizado_en = datetime('now')
       WHERE id = ?
     `).run(user.id);
@@ -56,6 +61,11 @@ async function login(req, res) {
     res.json({
       success: true,
       message: 'Login exitoso',
+      user: {
+        id: user.id,
+        username: user.usuario,
+        rol: user.rol
+      },
       data: {
         token,
         usuario: {
@@ -71,6 +81,7 @@ async function login(req, res) {
     console.error('❌ Error en login:', error.message);
     res.status(500).json({
       success: false,
+      message: 'Error interno del servidor',
       error: 'Error interno del servidor'
     });
   }
@@ -139,8 +150,8 @@ async function cambiarPassword(req, res) {
       SELECT password_hash FROM usuarios WHERE id = ?
     `).get(req.user.id);
 
-    // Verificar contraseña actual
-    const passwordValida = await bcrypt.compare(password_actual, user.password_hash);
+    // Verificar contraseña actual (soporta bcrypt y texto plano de red local)
+    const passwordValida = verificarPassword(password_actual, user.password_hash);
 
     if (!passwordValida) {
       return res.status(401).json({

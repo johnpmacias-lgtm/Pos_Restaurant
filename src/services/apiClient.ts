@@ -3,7 +3,14 @@
  * Reemplaza localStorage y database.ts (mock local)
  */
 
-const API_URL = 'http://localhost:3001/api';
+/**
+ * URL base de la API. Se configura mediante la variable de entorno
+ * VITE_API_URL (ver `.env` / `.env.example`). Si no está definida, se usa
+ * el backend local por defecto. Se normaliza sin "/" al final.
+ */
+export const API_URL = (
+  (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001'
+).replace(/\/+$/, '');
 
 // ============================================
 // TIPOS
@@ -16,9 +23,18 @@ export interface Usuario {
   rol: 'admin' | 'mesero' | 'cocina';
 }
 
+/** Usuario en el formato del contrato estándar de /api/login */
+export interface LoginUser {
+  id: string;
+  username: string;
+  rol: 'admin' | 'mesero' | 'cocina';
+}
+
 export interface LoginResponse {
   success: boolean;
   message?: string;
+  /** Contrato estándar: presente cuando success === true */
+  user?: LoginUser;
   data?: {
     token: string;
     usuario: Usuario;
@@ -67,7 +83,7 @@ async function fetchAPI<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-  const url = `${API_URL}${endpoint}`;
+  const url = `${API_URL}/api${endpoint}`;
   const token = getToken();
 
   const headers: Record<string, string> = {
@@ -111,17 +127,30 @@ async function fetchAPI<T = any>(
 // ============================================
 
 export const authAPI = {
-  login: async (usuario: string, password: string): Promise<LoginResponse> => {
-    const response = await fetchAPI<LoginResponse['data']>('/auth/login', {
-      method: 'POST',
-      body: JSON.stringify({ usuario, password }),
-    });
+  /**
+   * POST ${VITE_API_URL}/api/login
+   * Envía `{ username, password }`. El backend responde:
+   *   éxito -> { success: true, user: { id, username, rol }, data: { token, usuario } }
+   *   fallo -> { success: false, message: 'Credenciales incorrectas' }
+   */
+  login: async (username: string, password: string): Promise<LoginResponse> => {
+    const response = await fetchAPI<LoginResponse>(
+      '/api/login',
+      {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }
+    );
 
-    if (response.success && response.data?.token) {
-      setToken(response.data.token);
+    // El backend responde el objeto de login directamente (sin envolverlo en
+    // `data`), por lo que se castean los campos específicos del contrato.
+    const loginData = response as unknown as LoginResponse;
+
+    if (loginData.success && loginData.data?.token) {
+      setToken(loginData.data.token);
     }
 
-    return response as LoginResponse;
+    return loginData;
   },
 
   logout: () => {
@@ -370,7 +399,7 @@ export const configuracionAPI = {
 
   descargarBackup: async () => {
     const token = getToken();
-    const response = await fetch(`${API_URL}/backup`, {
+    const response = await fetch(`${API_URL}/api/backup`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },

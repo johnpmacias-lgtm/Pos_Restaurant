@@ -92,8 +92,19 @@ app.get('/api/health', (req, res) => {
 // --------------------------------------------
 
 /**
+ * POST /api/login
+ * Login de usuario (público) - contrato estándar:
+ *   Body:  { username, password }
+ *   Resp:  { success: true, user: { id, username, rol } }
+ *          { success: false, message: 'Credenciales incorrectas' }
+ */
+app.post('/api/login', (req, res) => {
+  authController.login(req, res);
+});
+
+/**
  * POST /api/auth/login
- * Login de usuario (público)
+ * Alias compatible con versiones anteriores del frontend.
  */
 app.post('/api/auth/login', (req, res) => {
   authController.login(req, res);

@@ -36,13 +36,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const login = async (usuario: string, password: string): Promise<boolean> => {
-    const response = await authAPI.login(usuario, password);
-    if (response.success && response.data) {
-      setUser(response.data.usuario);
-      return true;
+  const login = async (username: string, password: string): Promise<boolean> => {
+    // Todo el flujo de autenticación pasa por la API (SQLite en el backend).
+    // Ya no se leen credenciales ni sesiones desde localStorage.
+    try {
+      const response = await authAPI.login(username, password);
+
+      if (response.success) {
+        // Contrato estándar: { success: true, user: { id, username, rol } }
+        const u = response.user;
+        const legacy = response.data?.usuario;
+
+        const usuario: Usuario = {
+          id: u?.id ?? legacy?.id ?? '',
+          nombre: legacy?.nombre ?? u?.username ?? username,
+          usuario: u?.username ?? legacy?.usuario ?? username,
+          rol: u?.rol ?? legacy?.rol ?? 'mesero',
+        };
+
+        setUser(usuario);
+        return true;
+      }
+
+      console.warn('Login fallido:', response.message || response.error);
+      return false;
+    } catch (err) {
+      console.error('Error en login:', err);
+      return false;
     }
-    return false;
   };
 
   const logout = () => {
