@@ -33,26 +33,41 @@ export default function Login() {
         body: JSON.stringify({ username: usuario, password }),
       });
 
-      const data = await response.json();
+      let data: any = {};
+      try {
+        data = await response.json();
+      } catch {
+        data = {};
+      }
 
       if (response.ok && data.success) {
         // Guardar token de sesión si el backend lo devuelve (sessionStorage,
-        // no localStorage; usado por el resto de endpoints protegidos).
+        // usado por el resto de endpoints protegidos).
         const token = data.data?.token;
         if (token) {
           sessionStorage.setItem('auth_token', token);
         }
 
         // Actualizar el estado de autenticación global -> redirige al Dashboard
-        // según el rol (admin / mesero / cocina).
-        await login(usuario, password);
+        // según el rol (admin / mesero / cocina). login() revalida contra la
+        // API y setea el usuario en AuthContext.
+        const ok = await login(usuario, password);
+        if (!ok) {
+          throw new Error('no-auth');
+        }
       } else {
-        const message = data.message || 'Credenciales incorrectas';
+        const message =
+          response.status === 404
+            ? 'Endpoint /api/login no disponible (¿backend actualizado?). Reinicie el servidor.'
+            : data.message || data.error || 'Credenciales incorrectas';
         setError(message);
         alert(message);
       }
     } catch (err) {
-      const message = 'Error de conexión con el servidor';
+      const message =
+        err instanceof Error && err.message === 'no-auth'
+          ? 'El servidor validó las credenciales pero no se pudo iniciar la sesión'
+          : 'Error de conexión con el servidor';
       setError(message);
       alert(message);
     } finally {

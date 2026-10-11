@@ -47,11 +47,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const u = response.user;
         const legacy = response.data?.usuario;
 
+        const rol = u?.rol ?? legacy?.rol;
+        // Validación defensiva del rol: si el backend devolviera un rol
+        // inesperado, App.tsx caería al login y "no dejaría ingresar".
+        if (rol !== 'admin' && rol !== 'mesero' && rol !== 'cocina') {
+          console.error('Rol inválido recibido del backend:', rol);
+          return false;
+        }
+
         const usuario: Usuario = {
           id: u?.id ?? legacy?.id ?? '',
           nombre: legacy?.nombre ?? u?.username ?? username,
           usuario: u?.username ?? legacy?.usuario ?? username,
-          rol: u?.rol ?? legacy?.rol ?? 'mesero',
+          rol,
         };
 
         setUser(usuario);

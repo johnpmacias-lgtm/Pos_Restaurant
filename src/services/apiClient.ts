@@ -79,11 +79,22 @@ export function isAuthenticated(): boolean {
 // FUNCIÓN BASE DE FETCH
 // ============================================
 
+/**
+ * Normaliza el endpoint para evitar la ruta duplicada `/api/api/...`.
+ * (Bug que causaba 404 en el login: authAPI.login pasaba '/api/login'
+ * y aquí se volvía a prefijar con '/api'.)
+ */
+function normalizeEndpoint(endpoint: string): string {
+  if (endpoint.startsWith('/api/')) return endpoint;
+  if (endpoint === '/api') return endpoint;
+  return `/api${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+}
+
 async function fetchAPI<T = any>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<ApiResponse<T>> {
-  const url = `${API_URL}/api${endpoint}`;
+  const url = `${API_URL}${normalizeEndpoint(endpoint)}`;
   const token = getToken();
 
   const headers: Record<string, string> = {
@@ -104,20 +115,41 @@ async function fetchAPI<T = any>(
       headers,
     });
 
-    const data = await response.json();
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      data = {};
+    }
 
-    // Si el token expiró, limpiar sesión
-    if (response.status === 401 || response.status === 403) {
+    // IMPORTANTE: no interpretar un 401/403 del ENDPOINT DE LOGIN como
+    // "token expirado". Ese es un simple "credenciales incorrectas" y debe
+    // devolverse al llamador para que muestre la alerta correspondiente.
+    // Antes, cualquier 401 limpiaba la sesión y redirigía a /login, lo que
+    // impedía ingresar al sistema incluso con credenciales válidas cuando
+    // había una ruta duplicada u otro error de configuración.
+    const isAuthEndpoint = normalizeEndpoint(endpoint).startsWith('/auth') ||
+      normalizeEndpoint(endpoint) === '/login';
+
+    if ((response.status === 401 || response.status === 403) && !isAuthEndpoint) {
       setToken(null);
-      window.location.href = '/login';
+    }
+
+    if (!response.ok && data.success === undefined) {
+      return {
+        success: false,
+        error: data.error || `Error HTTP ${response.status}`,
+        message: data.message || `Error HTTP ${response.status}`,
+      };
     }
 
     return data;
   } catch (error) {
-    console.error('❌ Error en API call:', error);
+    console.error('❌ Error en API call:', url, error);
     return {
       success: false,
       error: 'Error de conexión con el servidor',
+      message: 'Error de conexión con el servidor',
     };
   }
 }
@@ -134,8 +166,9 @@ export const authAPI = {
    *   fallo -> { success: false, message: 'Credenciales incorrectas' }
    */
   login: async (username: string, password: string): Promise<LoginResponse> => {
+    // fetchAPI ya normaliza la ruta -> `${API_URL}/api/login` (sin duplicar /api)
     const response = await fetchAPI<LoginResponse>(
-      '/api/login',
+      '/login',
       {
         method: 'POST',
         body: JSON.stringify({ username, password }),

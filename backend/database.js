@@ -10,6 +10,7 @@
 
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
@@ -19,13 +20,50 @@ const { v4: uuidv4 } = require('uuid');
 
 // Si SEED_PLAIN_PASSWORDS=true, las contraseñas semilla se guardan en texto
 // plano (solo para redes locales de prueba). Por defecto se usa bcrypt.
+// NOTA: el login funciona con AMBOS formatos (bcrypt y texto plano), por lo
+// que esta bandera no puede "romper" la autenticación.
 const SEED_PLAIN_PASSWORDS = process.env.SEED_PLAIN_PASSWORDS === 'true';
 
 // Ruta de la base de datos (en el mismo directorio del backend)
-const DB_PATH = path.join(__dirname, 'pos_restaurante.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'pos_restaurante.db');
 
-// Crear instancia de SQLite
-const db = new Database(DB_PATH);
+// Reparación automática de bases de datos corruptas/incompletas (p. ej.
+// archivos vacíos de 0 bytes o WAL huérfano tras un corte de energía).
+// Hace backup y recrea la BD para que el seed vuelva a funcionar.
+function repairCorruptDatabase() {
+  try {
+    const stats = fs.statSync(DB_PATH);
+    if (stats.isFile() && stats.size === 0) {
+      console.warn('⚠️  Archivo de base de datos vacío detectado, regenerando...');
+      fs.unlinkSync(DB_PATH);
+      for (const suffix of ['-wal', '-shm']) {
+        const p = DB_PATH + suffix;
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+    }
+  } catch (e) {
+    /* el archivo no existe todavía: ok */
+  }
+}
+
+repairCorruptDatabase();
+
+// Crear instancia de SQLite (con reintento tras reparación)
+let db;
+try {
+  db = new Database(DB_PATH);
+} catch (err) {
+  console.error('⚠️  Base de datos ilegible, creando respaldo y regenerando:', err.message);
+  const backupPath = `${DB_PATH}.corrupt.${Date.now()}`;
+  try { fs.renameSync(DB_PATH, backupPath); } catch (e) { /* noop */ }
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      const p = DB_PATH + suffix;
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (e) { /* noop */ }
+  }
+  db = new Database(DB_PATH);
+}
 
 // ============================================
 // CONFIGURACIÓN INICIAL
@@ -264,14 +302,31 @@ function codificarPasswordSemilla(password) {
  * Verifica una contraseña en texto plano contra el valor almacenado en
  * `usuarios.password_hash`. Soporta tanto bcrypt como texto plano, lo que
  * permite migrar entre ambos formatos sin romper cuentas existentes.
+ * La comparación de usuario es insensible a mayúsculas/espacios (TRIM + LOWER)
+ * para evitar bloqueos por "ADMIN " o "Admin".
  */
 function verificarPassword(plano, guardado) {
-  if (typeof guardado !== 'string') return false;
-  if (guardado.startsWith('$2')) {
-    return bcrypt.compareSync(plano, guardado);
+  if (typeof guardado !== 'string' || typeof plano !== 'string') return false;
+  const valor = guardado.trim();
+  if (valor.startsWith('$2')) {
+    try {
+      return bcrypt.compareSync(plano, valor);
+    } catch (e) {
+      console.error('❌ Error comparando hash bcrypt:', e.message);
+      return false;
+    }
   }
-  return guardado === plano;
+  // Texto plano (red local): comparación exacta pero tolerante a espacios
+  return valor === plano.trim() || valor === plano;
 }
+
+// Sentencias preparadas cacheadas a nivel de módulo (mejor rendimiento:
+// SQLite compila el plan de ejecución una sola vez y se reutiliza)
+const stmtBuscarUsuarioPorNombre = db.prepare(`
+  SELECT id, nombre, usuario, password_hash, rol, activo
+  FROM usuarios
+  WHERE TRIM(LOWER(usuario)) = TRIM(LOWER(?)) AND activo = 1
+`);
 
 function seedDatabase() {
   const usuariosCount = db.prepare('SELECT COUNT(*) as count FROM usuarios').get();
@@ -402,3 +457,5 @@ if (process.argv.includes('--seed')) {
 
 module.exports = db;
 module.exports.verificarPassword = verificarPassword;
+// Búsqueda de usuario insensible a mayúsculas/espacios (case/whitespace-insensitive)
+module.exports.buscarUsuarioPorNombre = (nombre) => stmtBuscarUsuarioPorNombre.get(String(nombre ?? ''));

@@ -18,9 +18,13 @@ const SALT_ROUNDS = 10;
  *   - Fallo: { success: false, message: 'Credenciales incorrectas' }
  */
 async function login(req, res) {
-  // Aceptamos tanto `username` (estándar del requerimiento) como `usuario`
-  const username = req.body.username || req.body.usuario;
-  const password = req.body.password;
+  // Aceptamos tanto `username` (estándar del requerimiento) como `usuario`.
+  // Se normaliza con String().trim() para evitar fallos por espacios o
+  // valores no-string que provocaban "Credenciales incorrectas" siempre.
+  const username = String(
+    req.body.username ?? req.body.usuario ?? ''
+  ).trim();
+  const password = typeof req.body.password === 'string' ? req.body.password : '';
 
   // Validación de entrada
   if (!username || !password) {
@@ -32,12 +36,9 @@ async function login(req, res) {
   }
 
   try {
-    // Buscar usuario en SQLite (sentencia preparada cacheada por better-sqlite3)
-    const user = db.prepare(`
-      SELECT id, nombre, usuario, password_hash, rol, activo
-      FROM usuarios
-      WHERE usuario = ? AND activo = 1
-    `).get(username);
+    // Buscar usuario en SQLite (sentencia preparada cacheada + búsqueda
+    // insensible a mayúsculas/espacios)
+    const user = db.buscarUsuarioPorNombre(username);
 
     // Verificar contraseña (soporta bcrypt y texto plano de red local)
     if (!user || !verificarPassword(password, user.password_hash)) {
