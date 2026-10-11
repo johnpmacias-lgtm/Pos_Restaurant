@@ -30,11 +30,19 @@ export default function WaiterView() {
   const [llevarNombre, setLlevarNombre] = useState('');
   const [llevarTelefono, setLlevarTelefono] = useState('');
 
-  // Pago
-  const [pagoEfectivo, setPagoEfectivo] = useState(0);
-  const [pagoTarjeta, setPagoTarjeta] = useState(0);
-  const [pagoTransferencia, setPagoTransferencia] = useState(0);
-  const [pagoError, setPagoError] = useState('');
+  // Pago (se muestra en el modal PaymentModal al pulsar "Cobrar")
+  const [paymentTotal, setPaymentTotal] = useState(0);
+
+  // Actualiza el total pendiente si cambia el pedido que se va a cobrar
+  useEffect(() => {
+    if (paymentPedido) {
+      const actual = db.getPedidoById(paymentPedido.id);
+      const pagado = (actual?.pagos ?? []).reduce((s, p) => s + (p.total_pagado || 0), 0);
+      setPaymentTotal(Math.max(0, Number(actual?.total ?? paymentPedido.total) - pagado));
+    } else {
+      setPaymentTotal(0);
+    }
+  }, [paymentPedido]);
 
   const categorias = ['Platos', 'Bebidas', 'Postres', 'Desechables'];
   const productosCategoria = productos.filter(p => p.categoria === categoria && p.disponible && !p.es_desechable);
@@ -126,6 +134,17 @@ export default function WaiterView() {
 
   const enviarPedido = () => {
     if (cart.length === 0) return;
+    // Protección: si el usuario o la mesa seleccionada son null, no colapsar.
+    if (!user?.id) {
+      alert('No hay usuario autenticado. Cierra sesión e intenta de nuevo.');
+      return;
+    }
+    if (!selectedMesa?.id) {
+      alert('Selecciona una mesa antes de enviar el pedido.');
+      setView('mesas');
+      return;
+    }
+    const meseroId = user?.id || '';
     const detalles: DetallePedido[] = cart.map(item => ({
       id: uuidv4(), pedido_id: '', producto_id: item.producto.id,
       cantidad: item.cantidad, precio_unitario: item.producto.precio_base,
@@ -148,15 +167,15 @@ export default function WaiterView() {
         pedidos[idx].fecha_actualizacion = new Date().toISOString();
         localStorage.setItem('pos_pedidos', JSON.stringify(pedidos));
       }
-      db.updateMesaEstado(selectedMesa!.id, 'ocupada');
+      db.updateMesaEstado(selectedMesa?.id ?? '', 'ocupada');
     } else {
       const pedido = db.crearPedido({
-        tipo: 'mesa', mesa_id: selectedMesa!.id, cliente_nombre: '', cliente_telefono: '',
-        mesero_id: user!.id, estado_cocina: 'pendiente', estado_pago: 'pendiente',
+        tipo: 'mesa', mesa_id: selectedMesa?.id ?? null, cliente_nombre: '', cliente_telefono: '',
+        mesero_id: meseroId, estado_cocina: 'pendiente', estado_pago: 'pendiente',
         total, detalles, desechables: desechablesDet, pagos: [],
       });
       setPedidoActivo(pedido);
-      db.updateMesaEstado(selectedMesa!.id, 'ocupada');
+      db.updateMesaEstado(selectedMesa?.id ?? '', 'ocupada');
     }
     db.emitEvent('nuevo_pedido', { mesa: selectedMesa?.numero_mesa });
     refreshData();
@@ -165,8 +184,17 @@ export default function WaiterView() {
     setDesechables([]);
   };
 
-  const crearPedidoLlevar = () => {
+  // ============ COBRO DE PEDIDOS PARA LLEVAR ============
+  // Antes este flujo llamaba db.cobrarPedido() con $0 y sin modal: si el
+  // inventario no tenía stock del producto, la transacción fallaba en
+  // silencio y "no se podía cobrar". Ahora se abre el PaymentModal igual
+  // que en las mesas (con registro de pagos visibles y mensajes de error).
+  const abrirCobroLlevar = () => {
     if (!llevarNombre.trim() || cart.length === 0) return;
+    if (!user?.id) {
+      alert('No hay usuario autenticado. Cierra sesión e intenta de nuevo.');
+      return;
+    }
     const detalles: DetallePedido[] = cart.map(item => ({
       id: uuidv4(), pedido_id: '', producto_id: item.producto.id,
       cantidad: item.cantidad, precio_unitario: item.producto.precio_base,
@@ -176,20 +204,26 @@ export default function WaiterView() {
       id: uuidv4(), pedido_id: '', producto_id: item.producto.id,
       cantidad: item.cantidad, subtotal: item.producto.precio_base * item.cantidad,
     }));
-    const total = getTotal();
     const pedido = db.crearPedido({
       tipo: 'llevar', mesa_id: null, cliente_nombre: llevarNombre, cliente_telefono: llevarTelefono,
-      mesero_id: user!.id, estado_cocina: 'pendiente', estado_pago: 'pendiente',
-      total, detalles, desechables: desechablesDet, pagos: [],
+      mesero_id: user?.id || '', estado_cocina: 'pendiente', estado_pago: 'pendiente',
+      total: getTotal(), detalles, desechables: desechablesDet, pagos: [],
     });
-    const result = db.cobrarPedido(pedido.id, total, 0, 0);
-    if (result.success) db.emitEvent('nuevo_pedido', { tipo: 'llevar', cliente: llevarNombre });
+    setPaymentPedido(pedido);
+  };
+
+  const onPagoExitoso = () => {
+    const pedidoCobrado = paymentPedido;
+    setPaymentPedido(null);
     refreshData();
-    setView('mesas');
-    setCart([]);
-    setDesechables([]);
-    setLlevarNombre('');
-    setLlevarTelefono('');
+    if (pedidoCobrado?.tipo === 'llevar') {
+      db.emitEvent('nuevo_pedido', { tipo: 'llevar', cliente: pedidoCobrado.cliente_nombre });
+      setView('mesas');
+      setCart([]);
+      setDesechables([]);
+      setLlevarNombre('');
+      setLlevarTelefono('');
+    }
   };
 
   const getEstadoCocinaBadge = (estado: string) => {
@@ -285,7 +319,7 @@ export default function WaiterView() {
           <Truck className="w-6 h-6 text-purple-400" />
           <h1 className="text-white font-bold">Pedido Para Llevar</h1>
         </div>
-        <button onClick={crearPedidoLlevar} disabled={!llevarNombre.trim() || cart.length === 0}
+        <button onClick={abrirCobroLlevar} disabled={!llevarNombre.trim() || cart.length === 0}
           className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-bold">
           Cobrar ${getTotal().toFixed(2)}
         </button>
@@ -482,16 +516,13 @@ export default function WaiterView() {
         />
       )}
 
-      {/* Modal de pago global */}
+      {/* Modal de pago global (mesas y para llevar) */}
       {paymentPedido && (
         <PaymentModal
           pedido={paymentPedido}
+          totalPendiente={paymentTotal || undefined}
           onClose={() => setPaymentPedido(null)}
-          onSuccess={() => {
-            setPaymentPedido(null);
-            refreshData();
-            setView('mesas');
-          }}
+          onSuccess={onPagoExitoso}
         />
       )}
     </>

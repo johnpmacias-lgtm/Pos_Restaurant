@@ -62,22 +62,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [refreshData]);
 
   // Sincronizar el usuario autenticado (backend) con el estado de la app.
-  // Se busca el registro completo en el almacén local para que las vistas
-  // tengan `nombre`, `activo`, etc.; si no existe, se construye uno
-  // defensivo a partir de los datos del login (nunca quedar en blanco).
+  // `ensureLocalUsuario` crea/recupera el registro local correspondiente al
+  // usuario del backend: las vistas necesitan un id local ESTABLE, porque los
+  // pedidos/mesas/caja guardan referencias a ese id. Usar un objeto desalineado
+  // (o nulo) provocaba "user is null" y fallos al cobrar/cerrar sesión.
   useEffect(() => {
     if (!authUser) {
       setUser(null);
       return;
     }
-    const local = db.getUsuarios().find(
-      (u) => u.usuario.toLowerCase() === authUser.usuario.toLowerCase()
-    );
-    if (local) {
+    try {
+      db.initializeDatabase();
+      const local = db.ensureLocalUsuario({
+        id: String(authUser.id ?? ''),
+        username: authUser.usuario,
+        rol: authUser.rol,
+      });
       setUser(local);
-    } else {
+    } catch (err) {
+      console.error('Error al sincronizar usuario local:', err);
+      // Nunca quedar en blanco: fallback defensivo con los datos del login.
       setUser({
-        id: String(authUser.id),
+        id: String(authUser.id ?? 'invitado'),
         nombre: authUser.nombre || authUser.usuario,
         usuario: authUser.usuario,
         password_hash: '',
@@ -88,6 +94,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [authUser]);
 
   const handleLogin = (usuario: string, password: string): boolean => {
+    // Obsoleto: la autenticación real pasa por AuthContext/API (SQLite).
+    // Se mantiene por compatibilidad con llamadas antiguas.
     const loggedUser = db.login(usuario, password);
     if (loggedUser) {
       setUser(loggedUser);
@@ -98,11 +106,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const handleLogout = () => {
-    // Cierra la sesión tanto en el almacén local como en AuthContext
-    // (elimina token de sessionStorage) para volver al formulario de login.
-    db.logout();
-    setUser(null);
+    // Delegar SIEMPRE en AuthContext.logout(): es el que limpia token,
+    // sessionStorage y localStorage por completo y pone user=null, lo que
+    // hace que App.tsx muestre el Login. Antes aquí se hacía setUser(null)
+    // manual y quedaban restos de sesión que "revivían" al usuario, por lo
+    // que parecía que no se podía cerrar sesión.
     authLogout();
+    setUser(null);
+    refreshData();
   };
 
   return (

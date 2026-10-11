@@ -8,22 +8,34 @@ interface PaymentModalProps {
   onClose: () => void;
   onSuccess: () => void;
   title?: string;
+  /** Saldo pendiente real (total - pagos previos). Si no se indica, se usa el total. */
+  totalPendiente?: number;
 }
 
-export default function PaymentModal({ pedido, onClose, onSuccess, title }: PaymentModalProps) {
-  const [efectivo, setEfectivo] = useState(pedido.total);
+export default function PaymentModal({ pedido, onClose, onSuccess, title, totalPendiente }: PaymentModalProps) {
+  // Saldo realmente pendiente: permite cobros parciales correctos y evita
+  // que el modal pretenda cobrar $0 cuando ya fue pagado.
+  const saldo = Math.max(
+    0,
+    Number(totalPendiente ?? pedido.total ?? 0)
+  );
+  const [efectivo, setEfectivo] = useState(saldo);
   const [tarjeta, setTarjeta] = useState(0);
   const [transferencia, setTransferencia] = useState(0);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
 
   const totalPago = efectivo + tarjeta + transferencia;
-  const cambio = totalPago - pedido.total;
-  const esValido = totalPago >= pedido.total;
+  const cambio = totalPago - saldo;
+  const esValido = totalPago >= saldo && saldo > 0;
 
   const procesarPago = () => {
+    if (saldo <= 0) {
+      setError('Este pedido ya no tiene saldo pendiente.');
+      return;
+    }
     if (!esValido) {
-      setError(`Faltan $${(pedido.total - totalPago).toFixed(2)}`);
+      setError(`Faltan $${(saldo - totalPago).toFixed(2)}`);
       return;
     }
 
@@ -43,10 +55,10 @@ export default function PaymentModal({ pedido, onClose, onSuccess, title }: Paym
   };
 
   const quickAmounts = [
-    Math.ceil(pedido.total),
-    Math.ceil(pedido.total / 100) * 100,
-    Math.ceil(pedido.total / 500) * 500,
-    Math.ceil(pedido.total / 1000) * 1000,
+    Math.ceil(saldo),
+    Math.ceil(saldo / 100) * 100,
+    Math.ceil(saldo / 500) * 500,
+    Math.ceil(saldo / 1000) * 1000,
   ].filter((v, i, arr) => arr.indexOf(v) === i).slice(0, 4);
 
   return (
@@ -80,7 +92,7 @@ export default function PaymentModal({ pedido, onClose, onSuccess, title }: Paym
             {/* Total */}
             <div className="bg-slate-900/50 rounded-xl p-4 text-center">
               <p className="text-slate-400 text-sm">Total a cobrar</p>
-              <p className="text-4xl font-bold text-white">${pedido.total.toFixed(2)}</p>
+              <p className="text-4xl font-bold text-white">${saldo.toFixed(2)}</p>
             </div>
 
             {error && (

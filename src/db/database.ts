@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import type { LoginUser } from '../services/apiClient';
 import {
   Usuario, Mesa, Producto, Inventario, Pedido, Reserva,
   DetallePedido, PedidoDesechable, Pago, CajaApertura, CajaTurno,
@@ -299,10 +300,18 @@ export function cobrarPedido(
     if (pedidoIdx < 0) throw new Error('Pedido no encontrado');
 
     const pedido = pedidos[pedidoIdx];
-    const totalPagado = montoEfectivo + montoTarjeta + montoTransferencia;
+    const totalPagado = Number(montoEfectivo || 0) + Number(montoTarjeta || 0) + Number(montoTransferencia || 0);
 
-    if (totalPagado < pedido.total) {
-      throw new Error(`El monto pagado ($${totalPagado}) es menor al total ($${pedido.total})`);
+    // Saldo real pendiente (soporta cobros parciales previos). Antes se
+    // comparaba contra el total completo, lo que impedía cobrar un pedido
+    // con abonos y generaba errores confusos para el mesero.
+    const previo = (pedido.pagos || []).reduce((s, pg) => s + Number(pg.total_pagado || 0), 0);
+    const saldoPendiente = Math.max(0, Number(pedido.total || 0) - previo);
+    if (saldoPendiente <= 0) throw new Error('El pedido ya está pagado');
+    if (totalPagado <= 0) throw new Error('El monto pagado debe ser mayor a $0');
+
+    if (totalPagado < saldoPendiente) {
+      throw new Error(`El monto pagado ($${totalPagado}) es menor al saldo pendiente ($${saldoPendiente})`);
     }
 
     // Verificar inventario
@@ -312,7 +321,10 @@ export function cobrarPedido(
     // Verificar stock de productos del pedido
     for (const detalle of pedido.detalles) {
       const inv = inventario.find(i => i.producto_id === detalle.producto_id);
-      if (!inv) throw new Error(`Inventario no encontrado para producto ${detalle.producto_id}`);
+      if (!inv) {
+        // Inventario no registrado: no bloquear el cobro (el descuento simplemente no aplica)
+        continue;
+      }
       if (inv.stock_actual < detalle.cantidad) {
         const prod = productos.find(p => p.id === detalle.producto_id);
         throw new Error(`Stock insuficiente de ${prod?.nombre || detalle.producto_id}`);
@@ -320,9 +332,9 @@ export function cobrarPedido(
     }
 
     // Verificar stock de desechables
-    for (const desechable of pedido.desechables) {
+    for (const desechable of pedido.desechables ?? []) {
       const inv = inventario.find(i => i.producto_id === desechable.producto_id);
-      if (!inv) throw new Error(`Inventario no encontrado para desechable ${desechable.producto_id}`);
+      if (!inv) continue;
       if (inv.stock_actual < desechable.cantidad) {
         const prod = productos.find(p => p.id === desechable.producto_id);
         throw new Error(`Stock insuficiente de ${prod?.nombre || desechable.producto_id}`);
@@ -355,8 +367,11 @@ export function cobrarPedido(
       total_pagado: totalPagado,
     };
 
-    pedidos[pedidoIdx].pagos = [...pedido.pagos, pago];
-    pedidos[pedidoIdx].estado_pago = totalPagado >= pedido.total ? 'pagado' : 'parcial';
+    pedidos[pedidoIdx].pagos = [...(pedido.pagos ?? []), pago];
+    // Redondeo a 2 decimales para comparar saldos sin falsos "parcial" por
+    // errores de punto flotante.
+    const saldoRestante = Math.round((Number(pedido.total || 0) - previo - totalPagado) * 100) / 100;
+    pedidos[pedidoIdx].estado_pago = saldoRestante <= 0 ? 'pagado' : 'parcial';
     pedidos[pedidoIdx].fecha_actualizacion = new Date().toISOString();
 
     // Si es pedido de mesa y está pagado, liberar mesa
@@ -376,6 +391,7 @@ export function cobrarPedido(
     return { success: true, pedido: pedidos[pedidoIdx] };
   } catch (error: any) {
     // ROLLBACK
+    console.error('cobrarPedido falló:', error?.message);
     return { success: false, error: error.message };
   }
 }
@@ -452,6 +468,39 @@ export function onEvent(callback: (event: { type: string; payload: any; timestam
 // ============ USUARIOS CRUD ============
 export function getUsuarios(): Usuario[] {
   return getCollection<Usuario>(DB_KEYS.usuarios);
+}
+
+/**
+ * Sincroniza el usuario autenticado contra el backend (SQLite) con el
+ * almacén local. Las vistas operan sobre registros locales (mesas, pedidos,
+ * caja referencian ids locales), por lo que al iniciar sesión se garantiza
+ * que exista un registro con ese id; si ya existe (misma cuenta creada aquí),
+ * se preserva y solo se reactiva. Devuelve el registro local definitivo.
+ */
+export function ensureLocalUsuario(auth: LoginUser): Usuario {
+  const usuarios = getUsuarios();
+  const username = String(auth.username ?? '').trim().toLowerCase();
+  let idx = usuarios.findIndex(
+    (u) => u.id === String(auth.id) || u.usuario.toLowerCase() === username
+  );
+  if (idx < 0) idx = usuarios.findIndex((u) => u.id === username);
+  if (idx >= 0) {
+    if (!usuarios[idx].activo) {
+      usuarios[idx].activo = true;
+      setCollection(DB_KEYS.usuarios, usuarios);
+    }
+    return usuarios[idx];
+  }
+  const nuevo: Usuario = {
+    id: String(auth.id ?? uuidv4()),
+    nombre: username || 'usuario',
+    usuario: username,
+    password_hash: '', // la contraseña se valida exclusivamente en el backend
+    rol: auth.rol,
+    activo: true,
+  };
+  setCollection(DB_KEYS.usuarios, [...usuarios, nuevo]);
+  return nuevo;
 }
 
 export function addUsuario(usuario: Omit<Usuario, 'id' | 'password_hash'> & { password: string }): Usuario {
