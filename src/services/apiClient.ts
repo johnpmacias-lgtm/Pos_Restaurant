@@ -4,13 +4,23 @@
  */
 
 /**
- * URL base de la API. Se configura mediante la variable de entorno
- * VITE_API_URL (ver `.env` / `.env.example`). Si no está definida, se usa
- * el backend local por defecto. Se normaliza sin "/" al final.
+ * URL base de la API. Detección DINÁMICA del host:
+ * - Si VITE_API_URL está definida (.env), se usa tal cual.
+ * - Si NO está definida, se construye a partir de window.location.hostname,
+ *   de modo que un celular conectado a la red local apunta automáticamente
+ *   a la PC que corre el backend (ej: http://192.168.1.50:3001) en lugar
+ *   de quedarse "solo" intentando hablar con su propio localhost.
  */
+const hostname =
+  (typeof window !== 'undefined' && window.location?.hostname) || 'localhost';
+
 export const API_URL = (
-  (import.meta as any).env?.VITE_API_URL ?? 'http://localhost:3001'
+  ((import.meta as any).env?.VITE_API_URL as string | undefined)?.trim() ||
+  `http://${hostname}:3001`
 ).replace(/\/+$/, '');
+
+/** Endpoint completo estilo `${API_URL}/api/...` (para fetch directos) */
+export const API_BASE = `${API_URL}/api`;
 
 // ============================================
 // TIPOS
@@ -505,5 +515,79 @@ export const usuariosAPI = {
     return fetchAPI(`/usuarios/${id}/toggle-activo`, {
       method: 'PUT',
     });
+  },
+};
+
+// ============================================
+// API CLIENT GENÉRICO (compatibilidad)
+// ============================================
+
+/**
+ * Cliente genérico con detección dinámica de host. Permite a cualquier
+ * módulo (ej: src/db/database.ts) enviar datos al backend central sin
+ * hardcodear localhost — así el celular y la PC comparten el mismo
+ "cerebro" (SQLite del servidor).
+ */
+/** Headers con token JWT si hay sesión activa (el backend exige auth en /api/*) */
+function withAuthHeader(headers: Record<string, string>): Record<string, string> {
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
+/**
+ * Resuelve la URL base para escrituras (POST/PUT).
+ * - Si VITE_API_URL apunta a localhost pero el usuario entró desde la red
+ *   (ej: celular vía http://192.168.x.x:3000), se IGNORA localhost y se usa
+ *   el hostname actual + :3001 — así el dispositivo habla con el backend de
+ *   la PC en vez de su propio "localhost" vacío.
+ * - En desarrollo (mismo host) también funciona vía el proxy de Vite.
+ */
+function writeBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    const currentHost = window.location?.hostname || '';
+    const envIsLocalhost = /localhost|127\.0\.0\.1/.test(API_URL);
+    const viewingFromLan = currentHost && !/localhost|127\.0\.0\.1/.test(currentHost);
+    if (envIsLocalhost && viewingFromLan) {
+      return `http://${currentHost}:3001`;
+    }
+  }
+  return API_URL;
+}
+
+export const apiClient = {
+  /** GET ${API_URL}/api/<endpoint> */
+  async get(endpoint: string): Promise<any> {
+    const res = await fetch(
+      `${API_URL}${normalizeEndpoint(endpoint)}`,
+      { headers: withAuthHeader({}) }
+    );
+    return res.json();
+  },
+
+  /** POST al backend central (usa host dinámico si se accede desde la LAN) */
+  async post(endpoint: string, data: any): Promise<any> {
+    const res = await fetch(
+      `${writeBaseUrl()}${normalizeEndpoint(endpoint)}`,
+      {
+        method: 'POST',
+        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+      }
+    );
+    return res.json();
+  },
+
+  /** PUT al backend central (usa host dinámico si se accede desde la LAN) */
+  async put(endpoint: string, data: any): Promise<any> {
+    const res = await fetch(
+      `${writeBaseUrl()}${normalizeEndpoint(endpoint)}`,
+      {
+        method: 'PUT',
+        headers: withAuthHeader({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+      }
+    );
+    return res.json();
   },
 };

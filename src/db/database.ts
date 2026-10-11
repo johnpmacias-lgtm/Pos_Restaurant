@@ -1,5 +1,9 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { LoginUser } from '../services/apiClient';
+// apiClient: envía los pedidos al BACKEND CENTRAL (SQLite del servidor) para
+// que celular y PC compartan los mismos datos. Sin esto, cada dispositivo
+// trabajaba "offline" solo con su localStorage.
+import { apiClient } from '../services/apiClient';
 import {
   Usuario, Mesa, Producto, Inventario, Pedido, Reserva,
   DetallePedido, PedidoDesechable, Pago, CajaApertura, CajaTurno,
@@ -262,15 +266,44 @@ export function getPedidosByCocina(): Pedido[] {
 }
 
 export function crearPedido(pedido: Omit<Pedido, 'id' | 'fecha_creacion' | 'fecha_actualizacion'>): Pedido {
-  const pedidos = getPedidos();
   const newPedido: Pedido = {
-    ...pedido,
+    ...(pedido as any),
     id: uuidv4(),
     fecha_creacion: new Date().toISOString(),
     fecha_actualizacion: new Date().toISOString(),
   };
+
+  // 1. Lo guarda localmente (para que la pantalla reaccione rápido)
+  const pedidos = getPedidos();
   pedidos.push(newPedido);
   setCollection(DB_KEYS.pedidos, pedidos);
+
+  // 2. ¡ENVÍA EL PEDIDO AL BACKEND CENTRAL!
+  // Esto es lo que faltaba para que la PC (y cocina/celulares) lo vean:
+  // sin esto cada dispositivo trabajaba solo con su localStorage.
+  apiClient.post('/pedidos', {
+    id: newPedido.id,
+    tipo: newPedido.tipo,
+    mesa_id: newPedido.mesa_id ?? null,
+    cliente_nombre: newPedido.cliente_nombre || '',
+    cliente_telefono: newPedido.cliente_telefono || '',
+    estado_cocina: newPedido.estado_cocina,
+    total: newPedido.total,
+    detalles: (newPedido.detalles || []).map(d => ({
+      producto_id: d.producto_id,
+      cantidad: d.cantidad,
+      precio_unitario: d.precio_unitario,
+      notas: (d as any).notas || '',
+    })),
+    desechables: (newPedido.desechables || []).map(d => ({
+      producto_id: d.producto_id,
+      cantidad: d.cantidad,
+      precio_unitario: (d as any).precio_unitario ?? 0,
+    })),
+  }).catch(err => {
+    console.error('Error enviando pedido al servidor central:', err);
+  });
+
   return newPedido;
 }
 
@@ -281,6 +314,12 @@ export function updateEstadoCocina(pedidoId: string, estado: EstadoCocina): Pedi
     pedidos[idx].estado_cocina = estado;
     pedidos[idx].fecha_actualizacion = new Date().toISOString();
     setCollection(DB_KEYS.pedidos, pedidos);
+
+    // Sincroniza el cambio de estado con el backend central para que
+    // cocina/meseros en otros dispositivos lo vean (fire-and-forget).
+    apiClient.put(`/pedidos/${pedidoId}/estado-cocina`, { estado_cocina: estado })
+      .catch(err => console.error('Error sincronizando estado de cocina:', err));
+
     return pedidos[idx];
   }
   return null;
