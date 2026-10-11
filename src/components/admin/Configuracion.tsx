@@ -21,6 +21,8 @@ export default function Configuracion() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
   useEffect(() => {
     cargarConfiguracion();
   }, []);
@@ -28,7 +30,7 @@ export default function Configuracion() {
   const cargarConfiguracion = async () => {
     try {
       setLoading(true);
-      const response = await fetch('http://localhost:3001/api/configuracion');
+      const response = await fetch(`${API_URL}/api/configuracion`);
       const data = await response.json();
       
       if (data.success) {
@@ -50,7 +52,7 @@ export default function Configuracion() {
       setSaving(true);
       setMessage(null);
 
-      const response = await fetch('http://localhost:3001/api/configuracion', {
+      const response = await fetch(`${API_URL}/api/configuracion`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -75,7 +77,7 @@ export default function Configuracion() {
 
   const handleDescargarBackup = async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/backup');
+      const response = await fetch(`${API_URL}/api/backup`);
       
       if (!response.ok) {
         throw new Error('Error al descargar el backup');
